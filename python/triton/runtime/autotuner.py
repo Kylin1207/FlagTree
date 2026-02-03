@@ -132,6 +132,8 @@ class Autotuner(KernelInterface):
         if tensor_size_name in self.nargs and block_size_name in current:
             tensor_size = self.nargs[tensor_size_name]
             block_size = current[block_size_name]
+            if not isinstance(tensor_size, int) or not isinstance(block_size, int):
+                return
             if block_size > tensor_size:
                 if knobs.autotuning.ajust_block_size_print:
                     print(f'[INFO] Load Adjust block size: {block_size_name}={block_size} > tensor_size={tensor_size}')
@@ -271,7 +273,7 @@ class Autotuner(KernelInterface):
         # augment meta-parameters with tunable ones
         current = dict(meta, **config.all_kwargs())
         # flagtree tune: 自动从依赖分析结果中获取参数配对
-        if knobs.autotuning.adjust_block_size:
+        if knobs.autotuning.adjust_block_size and not isinstance(self.fn, Heuristics):
             self._auto_adjust_block_sizes(current, config)
         if knobs.autotuning.ajust_block_size_print:
             print(f'[INFO] Adjusted Config: {config}')
