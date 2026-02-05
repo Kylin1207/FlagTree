@@ -996,10 +996,16 @@ def CallOp : TT_Op<"call", [CallOpInterface, /*MemRefsNormalizable, */DeclareOpI
     ```
   }];
 
-  let arguments = (ins FlatSymbolRefAttr:$callee, 
+  let arguments = (
+#ifndef LLVM_MAJOR_VERSION_21_COMPATIBLE
+                   ins FlatSymbolRefAttr:$callee,
                    Variadic<AnyType>:$operands,
                    OptionalAttr<DictArrayAttr>:$arg_attrs,
                    OptionalAttr<DictArrayAttr>:$res_attrs
+#else
+                   ins FlatSymbolRefAttr:$callee,
+                   Variadic<AnyType>:$operands
+#endif
                   );
 
   let results = (outs Variadic<AnyType>);
