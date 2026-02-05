@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   ascend-build-and-test:
-    runs-on: ascend
+    runs-on: flagtree-ascend
     steps:
       - name: Checkout code (attempt 1)
         id: checkout1
