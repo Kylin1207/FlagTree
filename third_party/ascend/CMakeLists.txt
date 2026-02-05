@@ -9,11 +9,11 @@ add_triton_library(Registrar Registrar.cc)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # Triton Ascend is dependent on AscendNPU IR
-#set(ASCENDNPU_IR_SRC_DIR "${PROJECT_SOURCE_DIR}/third_party/ascendnpu-ir")
-#set(ASCENDNPU_IR_BINARY_DIR "${PROJECT_BINARY_DIR}/third_party/ascendnpu-ir")
+#set(ASCENDNPU_IR_SRC_DIR "${PROJECT_SOURCE_DIR}/third_party/ascend/AscendNPU-IR")
+#set(ASCENDNPU_IR_BINARY_DIR "${PROJECT_BINARY_DIR}/third_party/ascend/AscendNPU-IR")
 
-set(BISHENGIR_ENABLE_A5_UNPUBLISHED_FEATURES ON)
-set(BISHENGIR_BUILD_STANDALONE_IR_ONLY ON)
+#set(BISHENGIR_ENABLE_A5_UNPUBLISHED_FEATURES ON)
+#set(BISHENGIR_BUILD_STANDALONE_IR_ONLY ON)
 
 #add_subdirectory(${ASCENDNPU_IR_SRC_DIR} ${ASCENDNPU_IR_BINARY_DIR})
 #include_directories(${ASCENDNPU_IR_SRC_DIR}/bishengir/include)

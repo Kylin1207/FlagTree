@@ -37,6 +37,13 @@ elseif(FLAGTREE_BACKEND STREQUAL "ascend")
   set(LLVM_MAJOR_VERSION_21_COMPATIBLE ON CACHE BOOL "AscendNPU-IR build with llvm major version 21 or later" FORCE)
   add_compile_options("-Wno-deprecated-declarations")
   add_compile_options("-Wno-error=deprecated-declarations")
+  # AscendNPU-IR
+  set(BISHENGIR_ENABLE_A5_UNPUBLISHED_FEATURES ON)
+  set(BISHENGIR_BUILD_STANDALONE_IR_ONLY ON)
+  set(ASCENDNPU_IR_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ascend/AscendNPU-IR)
+  set(ASCENDNPU_IR_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/third_party/ascend/AscendNPU-IR)
+  include_directories(${ASCENDNPU_IR_SRC_DIR}/bishengir/include)
+  include_directories(${ASCENDNPU_IR_BINARY_DIR}/bishengir/include)
 else()
   set(FLIR_BUILD_INCUBATED OFF CACHE BOOL "Build FLIR incubated passes" FORCE)
 endif()
@@ -153,13 +160,6 @@ function(add_triton_object name)
     INTERFACE $<TARGET_OBJECTS:${name}>
   )
 
-  if (FLAGTREE_BACKEND STREQUAL "ascend")
-    set(ASCENDNPU_IR_SRC_DIR ${PROJECT_SOURCE_DIR}/third_party/ascendnpu-ir)
-    set(ASCENDNPU_IR_BINARY_DIR ${PROJECT_BINARY_DIR}/third_party/ascendnpu-ir)
-    include_directories(${ASCENDNPU_IR_SRC_DIR}/bishengir/include)
-    include_directories(${ASCENDNPU_IR_BINARY_DIR}/bishengir/include)
-  endif()
-
   #add_library(${name} OBJECT ${ARG_UNPARSED_ARGUMENTS})
   if(ARG_DEPENDS)
     add_dependencies(${name} ${ARG_DEPENDS})
@@ -225,6 +225,10 @@ if (NOT WIN32 AND NOT APPLE)
   link_libraries(stdc++fs)
 endif()
 
+# AscendNPU-IR
+if(FLAGTREE_BACKEND STREQUAL "ascend")
+  add_subdirectory(${ASCENDNPU_IR_SRC_DIR} ${ASCENDNPU_IR_BINARY_DIR})
+endif()
 
 # -----
 
