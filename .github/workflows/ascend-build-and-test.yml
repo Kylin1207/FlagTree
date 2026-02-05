@@ -79,7 +79,6 @@ jobs:
         run: |
           set -x
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
-          python3 third_party/tests/ascend/vector-add.py
           python3 third_party/ascend/examples/tutorials/01-vector-add.py
           python3 third_party/ascend/examples/tutorials/02-fused-softmax.py
           python3 third_party/ascend/examples/tutorials/03-layer-norm.py
