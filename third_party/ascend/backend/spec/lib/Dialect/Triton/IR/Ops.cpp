@@ -90,65 +90,6 @@ LogicalResult DescriptorStoreOp::verify() {
                                        getSrc().getType());
 }
 
-// The following ops, including `call`, `func`, and `return` are copied and
-// modified from
-// https://github.com/llvm/llvm-project/blob/main/mlir/lib/Dialect/Func/IR/FuncOps.cpp
-// We could revert it back once MLIR has a better inliner interface.
-//-- FuncOp --
-void FuncOp::build(OpBuilder &builder, OperationState &state, StringRef name,
-                   FunctionType type, ArrayRef<NamedAttribute> attrs,
-                   ArrayRef<DictionaryAttr> argAttrs) {
-  state.addAttribute(SymbolTable::getSymbolAttrName(),
-                     builder.getStringAttr(name));
-  state.addAttribute(getFunctionTypeAttrName(state.name), TypeAttr::get(type));
-  state.attributes.append(attrs.begin(), attrs.end());
-  state.addRegion();
-
-  if (argAttrs.empty())
-    return;
-  assert(type.getNumInputs() == argAttrs.size());
-#if LLVM_VERSION_MAJOR < 21
-  function_interface_impl::addArgAndResultAttrs(
-#else // triton_v3.3.x
-  call_interface_impl::addArgAndResultAttrs(
-#endif
-      builder, state, argAttrs, /*resultAttrs=*/std::nullopt,
-      getArgAttrsAttrName(state.name), getResAttrsAttrName(state.name));
-}
-
-// -- JoinOp --
-LogicalResult
-JoinOp::inferReturnTypes(MLIRContext *context, std::optional<Location> location,
-                         ValueRange operands, DictionaryAttr attributes,
-                         OpaqueProperties properties, RegionRange regions,
-                         SmallVectorImpl<Type> &inferredReturnTypes) {
-  // These should have been checked by tablegen-generated code.
-  assert(operands.size() == 2);
-  assert(operands[0].getType() == operands[1].getType());
-  assert(isa<RankedTensorType>(operands[0].getType()));
-  assert(isa<RankedTensorType>(operands[1].getType()));
-
-  Value lhs = operands[0];
-  // Value rhs = operands[1];
-  auto srcTy = cast<RankedTensorType>(lhs.getType());
-
-  SmallVector<int64_t> retShape(srcTy.getShape());
-  retShape.push_back(2);
-
-  Attribute srcEnc = srcTy.getEncoding();
-  Attribute retEnc;
-  if (srcEnc) {
-    if (dyn_cast<DialectInferLayoutInterface>(&srcEnc.getDialect())
-            ->inferJoinOpEncoding(srcEnc, retEnc, location)
-            .failed()) {
-      return failure();
-    }
-  }
-  inferredReturnTypes.push_back(
-      RankedTensorType::get(retShape, srcTy.getElementType(), retEnc));
-  return success();
-}
-
 // -- GatherOp --
 LogicalResult GatherOp::verify() {
   RankedTensorType indicesTy = getIndices().getType();
@@ -194,50 +135,6 @@ LogicalResult GatherOp::inferReturnTypes(
   inferredReturnTypes.push_back(
       RankedTensorType::get(indicesType.getShape(), srcType.getElementType(),
                             indicesType.getEncoding()));
-  return success();
-}
-
-//-- IndexSelectSimdOp --
-LogicalResult ascend::IndexSelectSimdOp::inferReturnTypes(
-    MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
-    SmallVectorImpl<Type> &inferredReturnTypes) {
-
-  // Get operands using adaptor
-  IndexSelectSimdOpAdaptor adaptor(operands, attributes, properties, regions);
-
-  // Get element type from src pointer
-  Type elemType;
-  if (auto ptrType =
-          dyn_cast<triton::PointerType>(adaptor.getSrc().getType())) {
-    elemType = ptrType.getPointeeType();
-  } else {
-    return failure();
-  }
-
-  // Get index shape to determine the size of dim
-  auto indicesType = dyn_cast<RankedTensorType>(adaptor.getIndex().getType());
-  if (!indicesType)
-    return failure();
-  int64_t numIndices = indicesType.getShape()[0];
-
-  // Use adaptor to get attributes - this is the compatible way
-  int32_t dim = adaptor.getDim();
-  auto readShapeAttr = adaptor.getReadShape();
-
-  // Build result shape: read_shape but with dim replaced by numIndices
-  SmallVector<int64_t> resultShape;
-  for (size_t i = 0; i < readShapeAttr.size(); ++i) {
-    if (i == static_cast<size_t>(dim)) {
-      resultShape.push_back(numIndices);
-    } else {
-      resultShape.push_back(readShapeAttr[i]);
-    }
-  }
-
-  // Create result tensor type
-  inferredReturnTypes.push_back(RankedTensorType::get(resultShape, elemType));
-
   return success();
 }
 
