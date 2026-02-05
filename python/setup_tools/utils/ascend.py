@@ -3,9 +3,9 @@ from .tools import flagtree_configs, DownloadManager, Module
 
 downloader = DownloadManager()
 
-submodules = (Module(name="ascendnpu-ir", url="https://gitcode.com/Ascend/AscendNPU-IR.git",
+submodules = (Module(name="AscendNPU-IR", url="https://gitcode.com/qq_42979146/AscendNPU-IR.git",
                      commit_id="0501294d3e",
-                     dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "ascendnpu-ir")), )
+                     dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "ascend/AscendNPU-IR")), )
 
 
 def precompile_hook_flir(*args, **kargs):
