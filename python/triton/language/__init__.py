@@ -1,3 +1,10 @@
+# TODO
+try:
+    import acl
+    is_compile_on_910_95 = acl.get_soc_name().startswith("Ascend910_95")
+except Exception:
+    is_compile_on_910_95 = False
+
 # flagtree backend path specialization
 from triton.runtime.driver import spec_path
 

@@ -97,8 +97,8 @@ def spec_path(path_list: list):
     if idx == -1:
         return
 
-    triton_root = current_path[:idx + len("/triton") - 1]  # e.g., ".../triton"
-    rel_path = current_path[idx + len(marker):]  # e.g., "language" or "runtime"
+    triton_root = current_path[:idx + len("/triton")]
+    rel_path = current_path[idx + len(marker):]
     backend_path = os.path.join(
         triton_root, "backends", "ascend", "spec", "triton", rel_path)
     if os.path.isdir(backend_path):

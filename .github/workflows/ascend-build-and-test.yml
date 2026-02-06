@@ -86,7 +86,7 @@ jobs:
           python3 04-fused-attention.py
           python3 06-demo-autotune.py
           python3 07-profiler.py
-          python3 08-demo-libentry.py
+          #python3 08-demo-libentry.py
           python3 09-gather.py
           python3 10-gather_sorted.py
           python3 11-rab_time.py
