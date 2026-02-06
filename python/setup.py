@@ -697,6 +697,7 @@ def get_packages():
         if helper.flagtree_backend == "ascend":
             packages.append("triton/language/extra/cann")
             packages.append("triton/language/extra/kernels")
+            packages.append("triton/extension")
         else:
             packages.append(f"triton/language/extra/{helper.get_device_name()}")
     packages += helper.get_extra_packages()

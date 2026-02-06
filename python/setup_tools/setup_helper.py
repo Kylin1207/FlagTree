@@ -290,6 +290,8 @@ class CommonUtils:
                 pair = (package, f"{backend_triton_path}{package}")
                 connection.append(pair)
             package_dict.update(connection)
+            if flagtree_backend == "ascend":
+                package_dict["triton/extension"] = "../third_party/ascend/python/triton/extension"
         try:
             package_dict.update(configs.activated_module.get_package_dir())
         except Exception:
