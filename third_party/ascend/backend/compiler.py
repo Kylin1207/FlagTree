@@ -96,18 +96,16 @@ def make_ttir(mod, metadata, opt):
 def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
     # use triton_adapter to lower Triton-MLIR to linalg
     # Get Triton-MLIR as string
-    pm = ir.pass_manager(mod.context)
-    pm.enable_debug()
-
-    #  metadata.setdefault("enable_select_analysis", False)
-    #  metadata.setdefault("compile_on_910_95", False)
-    #  metadata.setdefault("force_simt_template", False)
 
     enable_nd2nz_on_vector = metadata["enable_nd2nz_on_vector"]
     enable_select_analysis = metadata["enable_select_analysis"]
     compile_on_910_95 = metadata["compile_on_910_95"]
     force_simt_template = metadata["force_simt_template"]
-    enable_linearize = metadata["enable_linearize"]
+    enable_mask_fallback_conversion = metadata["enable_mask_fallback_conversion"]
+    optimize_dynamic_offset = metadata["optimize_dynamic_offset"]
+
+    pm = ir.pass_manager(mod.context)
+    pm.enable_debug()
 
     # Add pass here.
     ascend.passes.ttir.add_triton_to_structure_incubated(
