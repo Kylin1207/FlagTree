@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import triton.language as tl
 from ..runtime.jit import jit
 from . import core
 from . import math

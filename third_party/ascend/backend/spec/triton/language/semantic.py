@@ -2039,6 +2039,6 @@ def make_tensor_descriptor(base: tl.tensor, shape: List[tl.tensor], strides: Lis
 
 
 tl.make_tensor_descriptor = make_tensor_descriptor
-tl.load_tensor_descriptor = load_tensor_descriptor
-tl.store_tensor_descriptor = store_tensor_descriptor
+#tl.load_tensor_descriptor = load_tensor_descriptor
+#tl.store_tensor_descriptor = store_tensor_descriptor
 tl.gather = gather

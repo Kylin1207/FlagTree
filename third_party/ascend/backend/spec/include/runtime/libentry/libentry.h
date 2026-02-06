@@ -39,7 +39,7 @@ private:
 
 } // namespace libentry
 
-PYBIND11_MODULE(libentry_ascend, m) {
+PYBIND11_MODULE(libentryC, m) {
   py::class_<libentry::ArgProcessor>(m, "ArgProcessor")
       .def(py::init<int>())
       .def("classify_arguments", &libentry::ArgProcessor::classifyArguments,
