@@ -371,6 +371,7 @@ void init_triton_ascend(py::module &&m) {
   auto passes = m.def_submodule("passes");
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
+    context.allowUnregisteredDialects();
     mlir::DialectRegistry registry;
     registry.insert<mlir::triton::ascend::TritonAscendDialect>();
     context.appendDialectRegistry(registry);
