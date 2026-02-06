@@ -110,33 +110,46 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
     enable_linearize = metadata["enable_linearize"]
 
     # Add pass here.
-    # ascend.passes.convert.add_triton_to_linalg_pipeline(pm)
-    if enable_linearize:
-        ascend.passes.convert.add_triton_linearize(pm)
-    ascend.passes.convert.add_triton_discretemaskaccessconversion(
+    ascend.passes.ttir.add_triton_to_structure_incubated(
         pm,
-        compile_on_910_95=compile_on_910_95,
-        force_simt_template=force_simt_template,
+        enable_mask_fallback_conversion,
+        optimize_dynamic_offset,
+        compile_on_910_95
     )
-    ascend.passes.convert.add_triton_to_annotation(pm)
-    ascend.passes.convert.add_triton_to_unstructure_incubated(
+    ascend.passes.ttir.add_discrete_mask_access_conversion(
         pm,
-        compile_on_910_95=compile_on_910_95,
-        force_simt_template=force_simt_template,
+        compile_on_910_95,
+        force_simt_template
     )
-    ascend.passes.convert.add_triton_to_hivm(pm)
-    ascend.passes.convert.add_triton_to_hfusion(pm)
-    ascend.passes.convert.add_triton_to_llvm(pm)
-    ascend.passes.convert.add_bubble_up_operation(pm)
-    ascend.passes.convert.add_triton_to_linalg_incubated(
+    ascend.passes.ttir.add_triton_to_annotation(pm)
+    ascend.passes.ttir.add_triton_to_unstructure_incubated(
         pm,
-        global_kernel=False,
-        named_ops=named_ops,
-        enable_nd2nz_on_vector=enable_nd2nz_on_vector,
-        enable_select_analysis=enable_select_analysis,
-        compile_on_910_95=compile_on_910_95,
+        compile_on_910_95,
+        force_simt_template
+    )
+    ascend.passes.ttir.add_triton_to_hivm(pm)
+    ascend.passes.ttir.add_triton_to_hfusion(pm)
+    ascend.passes.ttir.add_triton_to_llvm(pm)
+    ascend.passes.ttir.add_bubble_up_operation(pm)
+    ascend.passes.ttir.add_triton_to_structure_incubated(
+        pm,
+        enable_mask_fallback_conversion,
+        optimize_dynamic_offset,
+        compile_on_910_95
+    )
+    ascend.passes.ttir.add_triton_to_linalg_incubated(
+        pm,
+        False,
+        named_ops,
+        enable_nd2nz_on_vector,
+        enable_select_analysis,
+        compile_on_910_95
     )
     pm.run(mod)
+
+    if opt.debug:
+        dump_manager = get_dump_manager(metadata["hash"])
+        dump_manager.put(str(mod), "kernel.ttadapter.mlir", binary=False)
     return str(mod)
 
 
