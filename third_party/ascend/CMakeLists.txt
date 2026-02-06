@@ -30,6 +30,7 @@ add_triton_plugin(TritonAscend
   TritonToLinalgIncubated
   BiShengIRScopeDialect
   BiShengIRHIVMDialect
+  MLIRMeshDialect
 )
 
 # target_link_libraries(TritonAscend PRIVATE Python3::Module pybind11::headers)
