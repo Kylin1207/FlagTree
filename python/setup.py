@@ -698,6 +698,8 @@ def get_packages():
             packages.append("triton/language/extra/cann")
             packages.append("triton/language/extra/kernels")
             packages.append("triton/extension")
+            packages.append("triton/extension/buffer")
+            packages.append("triton/extension/buffer/language")
         else:
             packages.append(f"triton/language/extra/{helper.get_device_name()}")
     packages += helper.get_extra_packages()

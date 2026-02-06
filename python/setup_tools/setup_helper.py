@@ -292,7 +292,10 @@ class CommonUtils:
                     connection.append(pair)
                 package_dict.update(connection)
             if flagtree_backend == "ascend":
-                package_dict["triton/extension"] = "../third_party/ascend/python/triton/extension"
+                ascend_ext_base = "../third_party/ascend/python/triton/extension"
+                package_dict["triton/extension"] = ascend_ext_base
+                package_dict["triton/extension/buffer"] = f"{ascend_ext_base}/buffer"
+                package_dict["triton/extension/buffer/language"] = f"{ascend_ext_base}/buffer/language"
         try:
             package_dict.update(configs.activated_module.get_package_dir())
         except Exception:
