@@ -30,7 +30,6 @@ from triton.runtime.libentry import libentry
 
 device = torch.npu.current_device()
 stream = torch.npu.current_stream(device)
-stream_id = stream.npu_stream
 
 
 def benchmark(func):
@@ -60,7 +59,8 @@ def benchmark(func):
 def plot_performance_comparison(sizes, times_torch, times_triton, fname):
     import matplotlib.pyplot as plt
 
-    plt.rcParams["font.family"] = "Maple Mono NF CN"
+    # plt.rcParams["font.family"] = "Maple Mono NF CN"
+    plt.rcParams["font.family"] = "DejaVu Sans"
     plt.style.use('ggplot')
     #
     fig, ax = plt.subplots(figsize=(12, 8))
@@ -138,7 +138,7 @@ def torch_func(x0: torch.Tensor):
 
 
 @benchmark
-def triton_func(y0: torch.Tensor, x0: torch.Tensor, stream_id0: int):
+def triton_func(y0: torch.Tensor, x0: torch.Tensor):
     n_rows, n_cols = x0.shape
     ncore = 40
     xs = (n_rows + ncore - 1) // ncore
@@ -153,7 +153,6 @@ def triton_func(y0: torch.Tensor, x0: torch.Tensor, stream_id0: int):
         XBLOCK=xs,
         XBLOCK_SUB=xss,
         RBLOCK=n_cols,
-        stream=stream_id0,
     )
     return y0
 
@@ -172,7 +171,7 @@ for i in range(1, 16 + 1):
     x = torch.rand((batch, seq_len), dtype=DTYPE, device=DEV)
     y = torch.empty_like(x)
     torch_out, torch_time = torch_func(x)
-    triton_out, triton_time = triton_func(y, x, stream_id)
+    triton_out, triton_time = triton_func(y, x)
     torch.testing.assert_close(triton_out, torch_out)
     torch_times.append(torch_time)
     triton_times.append(triton_time)
