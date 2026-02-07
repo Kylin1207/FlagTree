@@ -321,9 +321,10 @@ def rab_time_backward_test(num_layers: int, batchsize: int, s: int, dtype: torch
 
 
 if __name__ == "__main__":
+    # flagtree: reduce len to avoid ub overflow
     num_layers = 8
-    train_len = 500
-    candidate_len = 500
+    train_len = 50
+    candidate_len = 50
     batch_size = 4
     data_type = torch.float32
     print("running rab time forward test:")
