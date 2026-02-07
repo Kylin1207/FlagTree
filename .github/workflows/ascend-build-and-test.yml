@@ -89,7 +89,7 @@ jobs:
           python3 08-demo-libentry.py
           python3 09-gather.py >output-09-gather.log
           python3 10-gather_sorted.py >output-10-gather_sorted.log
-          #python3 11-rab_time.py
+          python3 11-rab_time.py
           #python3 12-hstu_attention.py
           python3 13-matrix-multiplication-optimized.py
           python3 14-accuracy-comparison.py
