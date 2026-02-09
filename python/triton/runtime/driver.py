@@ -99,7 +99,6 @@ def spec_path(path_list: list):
 
     triton_root = current_path[:idx + len("/triton")]
     rel_path = current_path[idx + len(marker):]
-    backend_path = os.path.join(
-        triton_root, "backends", "ascend", "spec", "triton", rel_path)
+    backend_path = os.path.join(triton_root, "backends", "ascend", "spec", "triton", rel_path)
     if os.path.isdir(backend_path):
         path_list.insert(0, backend_path)

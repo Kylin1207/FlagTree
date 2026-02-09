@@ -13,12 +13,12 @@
 #if __has_include("bishengir/Dialect/Tensor/IR/TensorImpl.h")
 #include "bishengir/Dialect/Tensor/IR/TensorImpl.h"
 #endif
-#include "npu/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "npu/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/LogicalResult.h"
 

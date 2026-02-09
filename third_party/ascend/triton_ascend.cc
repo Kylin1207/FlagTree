@@ -9,14 +9,14 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
 
+#include "ascend/include/TritonToHFusion/Passes.h"
+#include "ascend/include/TritonToHIVM/Passes.h"
+#include "ascend/include/TritonToLLVM/Passes.h"
 #include "incubated/Conversion/DiscreteMaskAccessConversion/Passes.h"
 #include "incubated/Conversion/TritonToAnnotation/Passes.h"
 #include "incubated/Conversion/TritonToLinalgIncubated/Passes.h"
 #include "incubated/Conversion/TritonToStructuredIncubated/Passes.h"
 #include "incubated/Conversion/TritonToUnstructureIncubated/Passes.h"
-#include "ascend/include/TritonToHFusion/Passes.h"
-#include "ascend/include/TritonToHIVM/Passes.h"
-#include "ascend/include/TritonToLLVM/Passes.h"
 #include "npu/Dialect/TritonAscend/IR/TritonAscendDialect.h"
 
 #include "ir.h" // TritonOpBuilder
@@ -309,13 +309,13 @@ void init_triton_ascend_ir(py::module &&m) {
 }
 
 void init_triton_ascend_passes_ttir(py::module &&m) {
-  m.def("add_triton_to_structure_incubated", [](mlir::PassManager &pm,
-                                      bool enableMaskFallbackConversion,
-                                      bool optimizeDynamicOffset,
-                                      bool compileOn91095) {
-    pm.addPass(mlir::triton::createTritonToStructuredIncubatedPass(
-        enableMaskFallbackConversion, optimizeDynamicOffset, compileOn91095));
-  });
+  m.def("add_triton_to_structure_incubated",
+        [](mlir::PassManager &pm, bool enableMaskFallbackConversion,
+           bool optimizeDynamicOffset, bool compileOn91095) {
+          pm.addPass(mlir::triton::createTritonToStructuredIncubatedPass(
+              enableMaskFallbackConversion, optimizeDynamicOffset,
+              compileOn91095));
+        });
 
   m.def("add_triton_to_annotation", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createTritonToAnnotationPass());
@@ -335,7 +335,8 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
           TritonToUnstructureIncubatedOptions opts;
           opts.compileOn91095 = compileOn91095;
           opts.forceSimtTemplate = forceSimtTemplate;
-          pm.addPass(mlir::triton::createTritonToUnstructureIncubatedPass(opts));
+          pm.addPass(
+              mlir::triton::createTritonToUnstructureIncubatedPass(opts));
         });
 
   m.def("add_triton_to_hfusion", [](mlir::PassManager &pm) {

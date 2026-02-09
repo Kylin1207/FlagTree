@@ -5,7 +5,6 @@ spec_path(__path__)
 
 # flagtree backend specialization
 spec("language_extend_globals", globals())
-
 """isort:skip_file"""
 # Import order is significant here.
 
