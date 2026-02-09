@@ -22,30 +22,6 @@ TRITON_BUILTIN = "__triton_builtin__"
 PropagateNan = ir.PROPAGATE_NAN
 
 
-# flagtree backend language.core func specialization
-def spec_core_func(spec):
-    import sys
-
-    current_module_name = __name__
-    parent_module_name = '.'.join(current_module_name.split('.')[:-1])
-
-    for spec_api_name in spec.core_ext_spec_api_list:
-        if hasattr(spec, spec_api_name):
-            spec_api = getattr(spec, spec_api_name)
-            # triton.language
-            setattr(sys.modules[parent_module_name], spec_api.__name__, spec_api)
-            # triton.language.core
-            setattr(sys.modules[__name__], spec_api.__name__, spec_api)
-
-    tensor_model_name = __name__ + ".tensor"
-
-    for spec_api_name in spec.core_tensor_ext_spec_api_list:
-        if hasattr(spec, spec_api_name):
-            spec_api = getattr(spec, spec_api_name)
-            # triton.language.tensor
-            setattr(sys.modules[tensor_model_name], spec_api.__name__, spec_api)
-
-
 def builtin(fn: T) -> T:
     """Mark a function as a builtin."""
     assert callable(fn)
@@ -1316,13 +1292,6 @@ def trans(input: tensor, *dims, _builder=None):
     """
     if not dims:
         dims = (1, 0)
-
-    # flagtree backend specialization
-    from triton.runtime.driver import spec
-    unwrapped_dims = spec('ext_trans_unwrap_iterable', dims)
-    if unwrapped_dims is not None:
-        dims = unwrapped_dims
-
     return semantic.permute(input, dims, _builder)
 
 
@@ -1511,11 +1480,9 @@ def expand_dims(input, axis, _builder=None):
     return ret
 
 
-# flagtree backend specialization add new params: "overflow_mode"
 @_tensor_member_fn
 @builtin
-def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcast: bool = False,
-         overflow_mode: Optional[str] = None, _builder=None):
+def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcast: bool = False, _builder=None):
     """
     Casts a tensor to the given :code:`dtype`.
 
@@ -1530,25 +1497,13 @@ def cast(input, dtype: dtype, fp_downcast_rounding: Optional[str] = None, bitcas
     :param bitcast: If true, the tensor is bitcasted to the given
         :code:`dtype`, instead of being numerically casted.
     :type bitcast: bool, optional
-    :param overflow_mode: When overflow_mode is not set or is "trunc",
-        truncation (cut-off) will be used to handle overflow. When
-        overflow_mode is "sautrate", the maximum value of the data type
-        will be used to handle overflow.
-    :type overflow_mode: string, optional
     """
-    # flagtree backend specialization
-    from triton.runtime.driver import spec
-    overflow_modes = spec('ext_cast_set_overflow_modes')
-
     input = semantic.to_tensor(input, _builder)
     if isinstance(bitcast, constexpr):
         bitcast = bitcast.value
     if bitcast:
         return semantic.bitcast(input, dtype, _builder)
-    # flagtree backend specialization
-    rett = semantic.cast(input, dtype, _builder, fp_downcast_rounding)
-    spec('ext_cast_check_overflow_mode', overflow_mode, overflow_modes, rett, _builder)
-    return rett
+    return semantic.cast(input, dtype, _builder, fp_downcast_rounding)
 
 
 # -----------------------
@@ -1582,18 +1537,10 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
       specified (i.e. at least one must be :code:`None`).
     """
     assert input_precision is None or allow_tf32 is None, "Only one of input_precision and allow_tf32 can be specified"
-
-    # flagtree backend specialization
-    from triton.runtime.driver import spec
-    spec('check_dot_deprecated_param_allow_tf32', allow_tf32)
-
     if input_precision is None:
         supports_tf32 = _builder and "tf32" in _builder.options.allowed_dot_input_precisions
         default_precision = "tf32" if (supports_tf32 and (allow_tf32 or allow_tf32 is None)) else "ieee"
         input_precision = os.getenv("TRITON_F32_DEFAULT", default_precision)
-    else:
-        # flagtree backend specialization
-        spec('check_dot_invalid_input_precision', input_precision)
 
     input_precision = _constexpr_to_value(input_precision)
     out_dtype = _constexpr_to_value(out_dtype)
@@ -1629,10 +1576,9 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
 # -----------------------
 
 
-# flagtree backend specialization add new params: "care_padding"
 @builtin
 def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", cache_modifier="", eviction_policy="",
-         volatile=False, care_padding=True, _builder=None):
+         volatile=False, _builder=None):
     """
     Return a tensor of data whose values are loaded from memory at location defined by `pointer`:
 
@@ -1674,12 +1620,6 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     :type eviction_policy: str, optional
     :param volatile: changes volatile option in NVIDIA PTX
     :type volatile: bool, optional
-
-    :param care_padding: represents whether user cares about padding value or not, default is True, works as below:
-        1. if 'other' is not None, 'care_padding' takes no effect.
-        2. if 'other' is None and 'care_padding' = True, loaded tensor will fill zeroes on masked places.
-        3. if 'other' is None and 'care_padding' = False, masked places on loaded tensor will be random values, and tl.load may have a better performence.
-    :type care_padding: bool, optional
     """
     # `mask` and `other` can be constexpr
     mask = _constexpr_to_value(mask)
@@ -1692,12 +1632,8 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     cache_modifier = _constexpr_to_value(cache_modifier)
     eviction_policy = _constexpr_to_value(eviction_policy)
     volatile = _constexpr_to_value(volatile)
-    # flagtree backend specialization
-    from triton.runtime.driver import spec
-    if spec("enable_care_padding_load"):
-        care_padding = _constexpr_to_value(care_padding)
     return semantic.load(pointer, mask, other, boundary_check, padding_option, cache_modifier, eviction_policy,
-                         volatile, care_padding, _builder)
+                         volatile, _builder)
 
 
 @builtin
