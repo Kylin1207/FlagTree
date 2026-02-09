@@ -82,12 +82,6 @@ def spec_func(function_name: str):
 
 # flagtree backend path specialization
 def spec_path(path_list: list):
-    """
-    TODO: Read "ascend" from FLAGTREE_BACKEND file.
-    example: input __path__ = ["python/triton/compiler"]
-    backend_path = "third_party/ascend/backend/spec/python/triton/compiler"
-    __path__ = [backend_path, "python/triton/compiler"]
-    """
     import os
     if not path_list:
         return
@@ -96,7 +90,6 @@ def spec_path(path_list: list):
     idx = current_path.find(marker)
     if idx == -1:
         return
-
     triton_root = current_path[:idx + len("/triton")]
     rel_path = current_path[idx + len(marker):]
     backend_path = os.path.join(triton_root, "backends", "ascend", "spec", "triton", rel_path)

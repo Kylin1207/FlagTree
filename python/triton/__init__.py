@@ -2,6 +2,7 @@
 from triton.runtime.driver import spec_path
 
 spec_path(__path__)
+
 """isort:skip_file"""
 __version__ = '3.2.0'
 
