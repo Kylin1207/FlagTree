@@ -22,6 +22,9 @@
 #include "triton/Tools/LayoutUtils.h"
 
 #include <cassert>
+// begin flagtree tle
+#include <optional>
+// end flagtree tle
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -48,6 +51,21 @@ Value maybeAnd(RewriterBase &rewriter, Location loc, Value a, Value b) {
   }
   return a ? a : b;
 }
+
+// begin flagtree tle
+std::optional<unsigned> inferPtrAddrSpace(llvm::ArrayRef<Value> ptrElems) {
+  for (Value elem : ptrElems) {
+    if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(elem.getType()))
+      return ptrTy.getAddressSpace();
+  }
+  return std::nullopt;
+}
+
+bool isSharedPointerValue(llvm::ArrayRef<Value> ptrElems,
+                          unsigned defaultAddrSpace = 1) {
+  return inferPtrAddrSpace(ptrElems).value_or(defaultAddrSpace) == 3;
+}
+// end flagtree tle
 
 // Return a predicate that is true only if the current thread holds unique data,
 // according to freeVarsMask. The predicate may be null to indicate no
@@ -222,6 +240,9 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     // Get the LLVM values for pointers
     auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
     assert(ptrElems.size() == numElems);
+    // begin flagtree tle
+    const bool isSharedPtr = isSharedPointerValue(ptrElems);
+    // end flagtree tle
 
     // Get the LLVM values for mask
     SmallVector<Value> maskElems;
@@ -336,9 +357,13 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
       auto *addrOpr =
           ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
 
-      // Create L2 cache policy register if needed
-      Value l2PolicyReg =
-          createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
+      // begin flagtree tle
+      // Create L2 cache policy register if needed. Shared-memory accesses
+      // ignore cache modifiers so we skip materializing policy registers.
+      Value l2PolicyReg;
+      if (!isSharedPtr)
+        l2PolicyReg =
+            createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
       // Define the instruction opcode
       auto &ld = ptxBuilder.create("ld")
@@ -359,9 +384,10 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         evictOpr = ptxBuilder.newOperand(l2PolicyReg, "l");
 
       if (!evictOpr)
-        ld(dstsOpr, addrOpr).maybePredicate(pred, "b");
+        (*ld)(dstsOpr, addrOpr).maybePredicate(pred, "b");
       else
-        ld(dstsOpr, addrOpr, evictOpr).maybePredicate(pred, "b");
+        (*ld)(dstsOpr, addrOpr, evictOpr).maybePredicate(pred, "b");
+      // end flagtree tle
 
       // Create inline ASM signature
       SmallVector<Type> retTys(nWords, IntegerType::get(getContext(), width));
@@ -437,6 +463,9 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
     auto valueElems = unpackLLElements(loc, llValue, rewriter);
     assert(ptrElems.size() == valueElems.size());
+    // begin flagtree tle
+    const bool isSharedPtr = isSharedPointerValue(ptrElems);
+    // end flagtree tle
 
     // Determine the vectorization size
     unsigned vecOrig = vec;
@@ -523,9 +552,12 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       auto *asmAddr =
           ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
 
+      // begin flagtree tle
       // Create L2 cache policy register if needed
-      Value l2PolicyReg =
-          createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
+      Value l2PolicyReg;
+      if (!isSharedPtr)
+        l2PolicyReg =
+            createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
       auto &ptxStoreInstr =
           ptxBuilder.create("st")
@@ -547,9 +579,11 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
         evictOpr = ptxBuilder.newOperand(l2PolicyReg, "l");
 
       if (!evictOpr)
-        ptxStoreInstr(asmAddr, asmArgList).maybePredicate(pred, "b");
+        (*ptxStoreInstr)(asmAddr, asmArgList).maybePredicate(pred, "b");
       else
-        ptxStoreInstr(asmAddr, asmArgList, evictOpr).maybePredicate(pred, "b");
+        (*ptxStoreInstr)(asmAddr, asmArgList, evictOpr)
+            .maybePredicate(pred, "b");
+      // end flagtree tle
 
       auto asmReturnTy = void_ty(ctx);
       ptxBuilder.launch(rewriter, loc, asmReturnTy);
@@ -600,6 +634,9 @@ struct AtomicCASOpConversion
     auto ptrElements = unpackLLElements(loc, llPtr, rewriter);
     auto cmpElements = unpackLLElements(loc, llCmp, rewriter);
     auto valElements = unpackLLElements(loc, llVal, rewriter);
+    // begin flagtree tle
+    const bool isSharedPtr = isSharedPointerValue(ptrElements);
+    // end flagtree tle
 
     auto valueTy = op.getType();
     auto tensorTy = dyn_cast<RankedTensorType>(valueTy);
@@ -639,7 +676,12 @@ struct AtomicCASOpConversion
       llvm::raw_string_ostream os(semStr);
       os << op.getSem();
       auto scope = stringifyMemSyncScope(op.getScope()).str();
-      atom.global().o(semStr).o(scope).o("cas").o(sTy);
+      // begin flagtree tle
+      if (isSharedPtr)
+        atom.shared().o(semStr).o(scope).o("cas").o(sTy);
+      else
+        atom.global().o(semStr).o(scope).o("cas").o(sTy);
+      // end flagtree tle
       atom(dstOpr, ptrOpr, cmpOpr, valOpr).maybePredicate(threadPred);
 
       if (tensorTy) {
@@ -767,6 +809,9 @@ public:
     SmallVector<Value> maskElements;
     if (llMask)
       maskElements = unpackLLElements(loc, llMask, rewriter);
+    // begin flagtree tle
+    const bool isSharedPtr = isSharedPointerValue(ptrElements);
+    // end flagtree tle
 
     auto valueTy = op.getType();
     auto tensorTy = dyn_cast<RankedTensorType>(valueTy);
@@ -997,7 +1042,13 @@ public:
       }
 
       auto scope = stringifyMemSyncScope(op.getScope()).str();
-      auto &atom = ptxBuilderAtomicRMW.create("atom")->global().o(scope);
+      // begin flagtree tle
+      auto &atom = ptxBuilderAtomicRMW.create("atom");
+      if (isSharedPtr)
+        atom->shared().o(scope);
+      else
+        atom->global().o(scope);
+      // end flagtree tle
       auto rmwOp = stringifyRMWOp(atomicRmwAttr).str();
       auto sBits = std::to_string(valueElemNBits);
       switch (atomicRmwAttr) {
