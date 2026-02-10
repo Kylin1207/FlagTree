@@ -4,15 +4,10 @@
  */
 
 #include "ascend/include/TritonToHFusion/Passes.h"
-#if __has_include("bishengir/Dialect/HFusion/IR/HFusion.h")
+
 #include "bishengir/Dialect/HFusion/IR/HFusion.h"
-#endif
-#if __has_include("bishengir/Dialect/HFusion/IR/HFusionImpl.h")
 #include "bishengir/Dialect/HFusion/IR/HFusionImpl.h"
-#endif
-#if __has_include("bishengir/Dialect/Tensor/IR/TensorImpl.h")
 #include "bishengir/Dialect/Tensor/IR/TensorImpl.h"
-#endif
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/Pass/Pass.h"
@@ -111,7 +106,6 @@ struct TritonFpToFpToHFusionConversion : OpRewritePattern<triton::FpToFpOp> {
     }
 
     // Map non-RTNE rounding modes to HFusion rounding mode
-
     hfusion::RoundMode hfusionRoundMode;
     switch (roundingMode.value()) {
     case triton::RoundingMode::RTZ:
@@ -120,6 +114,7 @@ struct TritonFpToFpToHFusionConversion : OpRewritePattern<triton::FpToFpOp> {
     default:
       return op.emitError("Unsupported rounding mode for HFusion conversion");
     }
+    // Note: Only RTZ (and potential future non-RTNE modes) reach here
 
     // Get or create destination tensor (destination-style)
     SmallVector<Value> dsts;
@@ -151,7 +146,7 @@ void TritonToHFusionPass::runOnOperation() {
 
   // Use greedy pattern rewriter for simpler pattern matching
   // Patterns decide themselves whether to convert (via returning
-  // success/failure) success/failure)
+  // success/failure)
   RewritePatternSet patterns(&getContext());
   patterns.add<TritonHistogramToHFusionConversion>(patterns.getContext());
   patterns.add<TritonFpToFpToHFusionConversion>(patterns.getContext());

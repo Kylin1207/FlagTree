@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Huawei Technologies Co., Ltd. 2025.
+ * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -19,10 +19,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "ascend/include/TritonToHIVM/Passes.h"
-#if __has_include("bishengir/Dialect/HIVM/IR/HIVM.h")
+
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
-#endif
 #include "mlir/IR/Attributes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -32,6 +32,7 @@
 #include "llvm/Support/LogicalResult.h"
 
 #include "npu/Dialect/TritonAscend/IR/TritonAscendDialect.h"
+
 namespace mlir {
 namespace triton {
 #define GEN_PASS_DEF_TRITONTOHIVM
