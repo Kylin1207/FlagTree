@@ -83,8 +83,7 @@ static SmallVector<int64_t> getShapePerCTATile(RankedTensorType type) {
     }
     return ctaTileShape;
   }
-  
-  // 其他编码类型的支持
+
   if (auto linear = dyn_cast<gpu::LinearEncodingAttr>(encoding)) {
     auto sizePerThread = linear.getSizePerThread();
     auto threadsPerWarp = linear.getThreadsPerWarp();
@@ -115,8 +114,7 @@ void ExtractTileOp::build(
     ArrayRef<int64_t> tileShape) {
   
   auto srcType = cast<RankedTensorType>(src.getType());
-  
-  // 构造结果类型：使用tileShape作为shape，继承源的元素类型和编码
+ 
   auto resultType = RankedTensorType::get(
       tileShape,
       srcType.getElementType(),
@@ -140,12 +138,10 @@ LogicalResult ExtractTileOp::verify() {
   auto dstShape = dstTy.getShape();
   auto offsets = getStaticOffsets();
   
-  // ✅ 检查1: 元素类型必须匹配
   if (srcTy.getElementType() != dstTy.getElementType()) {
     return emitError("result element type must match source element type");
   }
   
-  // ✅ 检查2: 维度必须匹配
   if (srcTy.getRank() != dstTy.getRank()) {
     return emitError("result rank must equal source rank");
   }
@@ -154,7 +150,6 @@ LogicalResult ExtractTileOp::verify() {
     return emitError("offsets size must match tensor rank");
   }
   
-  // ✅ 检查3: 边界检查
   for (size_t i = 0; i < srcShape.size(); ++i) {
     if (dstShape[i] > srcShape[i]) {
       return emitOpError("result shape cannot exceed source shape at dimension ") << i;
@@ -171,43 +166,11 @@ LogicalResult ExtractTileOp::verify() {
     }
   }
   
-  // ✅ 检查4: CTA tile 对齐（如果编码支持）
-  /*try {
-    auto ctaTileShape = getShapePerCTATile(srcTy);
-    
-    for (size_t i = 0; i < srcShape.size(); ++i) {
-      // Offset 必须是 CTA tile size 的倍数
-      if (offsets[i] % ctaTileShape[i] != 0) {
-        return emitOpError("offset must be multiple of CTA tile size at dimension ")
-               << i << " (got " << offsets[i] << ", expected multiple of "
-               << ctaTileShape[i] << ")";
-      }
-      
-      // Tile shape 必须是 CTA tile size 的倍数
-      if (dstShape[i] % ctaTileShape[i] != 0) {
-        return emitOpError("result shape must be multiple of CTA tile size at dimension ")
-               << i << " (got " << dstShape[i] << ", expected multiple of "
-               << ctaTileShape[i] << ")";
-      }
-    }
-  } catch (...) {
-    // 如果无法获取 CTA tile shape，跳过此检查
-  }*/
   auto encoding = srcTy.getEncoding();
-  
-  // 只对 BlockedEncoding 做 CTA tile 检查
-  /*if (auto blocked = dyn_cast<gpu::BlockedEncodingAttr>(encoding)) {
-    auto sizePerThread = blocked.getSizePerThread();
-    auto threadsPerWarp = blocked.getThreadsPerWarp();
-    auto warpsPerCTA = blocked.getWarpsPerCTA();
-    */
+
     if (!encoding) {
-    // 在 Triton IR 阶段，tensor 还没有 encoding，这是正常的
-    // 只在 TritonGPU IR 阶段才有 encoding
     return success();
   }
-  
-  // 🔑 关键：使用 dyn_cast_or_null，即使 encoding 是 nullptr 也不会崩溃
   if (auto blocked = dyn_cast_or_null<gpu::BlockedEncodingAttr>(encoding)) {
     auto sizePerThread = blocked.getSizePerThread();
     auto threadsPerWarp = blocked.getThreadsPerWarp();
@@ -223,14 +186,12 @@ LogicalResult ExtractTileOp::verify() {
     }
     
     for (size_t i = 0; i < srcShape.size(); ++i) {
-      // Offset 必须是 CTA tile size 的倍数
       if (offsets[i] % ctaTileShape[i] != 0) {
         return emitOpError("offset must be multiple of CTA tile size at dimension ")
                << i << " (got " << offsets[i] << ", expected multiple of "
                << ctaTileShape[i] << ")";
       }
-      
-      // Tile shape 必须是 CTA tile size 的倍数
+
       if (dstShape[i] % ctaTileShape[i] != 0) {
         return emitOpError("result shape must be multiple of CTA tile size at dimension ")
                << i << " (got " << dstShape[i] << ", expected multiple of "
