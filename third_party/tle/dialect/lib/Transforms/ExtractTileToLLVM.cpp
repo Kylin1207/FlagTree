@@ -79,7 +79,7 @@ static unsigned linearize(ArrayRef<unsigned> coords,
 // ============================================================================
 static SmallVector<unsigned> getCTATileOrder(MLIRContext *ctx,
                                             const mlir::triton::LinearLayout &layout) {
-  // 🔑 从 LinearLayout 中提取 CTA (block) 维度的遍历顺序
+  // 从 LinearLayout 中提取 CTA (block) 维度的遍历顺序
   
   // 获取 layout 的秩（维度数）
   unsigned rank = layout.getNumOutDims();
