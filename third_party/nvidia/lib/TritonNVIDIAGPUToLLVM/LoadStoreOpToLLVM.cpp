@@ -2,6 +2,7 @@
 #include "TargetInfo.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -64,6 +65,39 @@ std::optional<unsigned> inferPtrAddrSpace(llvm::ArrayRef<Value> ptrElems) {
 bool isSharedPointerValue(llvm::ArrayRef<Value> ptrElems,
                           unsigned defaultAddrSpace = 1) {
   return inferPtrAddrSpace(ptrElems).value_or(defaultAddrSpace) == 3;
+}
+
+constexpr llvm::StringLiteral kRemoteShardCarrierAttr =
+    "tle.remote_shard_id_carrier";
+
+struct RemoteCTAInfo {
+  std::optional<int32_t> constCTAId;
+  Value dynamicCTAId;
+  Value basePtr;
+
+  bool hasRemoteCTAId() const { return constCTAId || dynamicCTAId; }
+};
+
+RemoteCTAInfo getRemoteCTAInfoFromPtrValue(Value ptr,
+                                           ConversionPatternRewriter &rewriter) {
+  RemoteCTAInfo info;
+  info.basePtr = ptr;
+
+  Operation *defOp = ptr.getDefiningOp();
+  if (!defOp)
+    return info;
+
+  auto ctaAttr = defOp->getAttrOfType<IntegerAttr>("tle.remote_cta_id");
+  if (ctaAttr)
+    info.constCTAId = static_cast<int32_t>(ctaAttr.getInt());
+
+  if (auto addPtrOp = dyn_cast<triton::AddPtrOp>(defOp);
+      addPtrOp && addPtrOp->hasAttr(kRemoteShardCarrierAttr)) {
+    info.basePtr = addPtrOp.getPtr();
+    info.dynamicCTAId = rewriter.getRemappedValue(addPtrOp.getOffset());
+  }
+
+  return info;
 }
 // end flagtree tle
 
@@ -241,10 +275,48 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
                        << "\n";
     }
     // Get the LLVM values for pointers
-    auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
-    assert(ptrElems.size() == numElems);
     // begin flagtree tle
+    auto remoteCTAInfo = getRemoteCTAInfoFromPtrValue(ptr, rewriter);
+    Value llBasePtr = llPtr;
+    if (remoteCTAInfo.basePtr != ptr) {
+      llBasePtr = rewriter.getRemappedValue(remoteCTAInfo.basePtr);
+      if (!llBasePtr)
+        return op.emitError("failed to remap remote base pointer");
+    }
+
+    auto ptrElems = unpackLLElements(loc, llBasePtr, rewriter);
+    assert(ptrElems.size() == numElems);
     const bool isSharedPtr = isSharedPointerValue(ptrElems);
+    if (remoteCTAInfo.hasRemoteCTAId() && !isSharedPtr)
+      return op.emitError("remote shard_id requires shared-memory pointers");
+
+    auto ensureI32 = [&](Value v) -> Value {
+      if (!v)
+        return Value();
+      if (v.getType().isInteger(32))
+        return v;
+      if (auto intTy = dyn_cast<IntegerType>(v.getType())) {
+        if (intTy.getWidth() > 32)
+          return rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), v);
+        if (intTy.isUnsigned())
+          return rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI32Type(), v);
+        return rewriter.create<LLVM::SExtOp>(loc, rewriter.getI32Type(), v);
+      }
+      return Value();
+    };
+    auto materializeRemoteCTAId = [&](Value v) -> Value {
+      if (!v)
+        return Value();
+      if (Value scalar = ensureI32(v))
+        return scalar;
+      auto elems = unpackLLElements(loc, v, rewriter);
+      if (elems.empty())
+        return Value();
+      return ensureI32(elems.front());
+    };
+    Value remoteDynamicCTAId = materializeRemoteCTAId(remoteCTAInfo.dynamicCTAId);
+    if (remoteCTAInfo.dynamicCTAId && !remoteDynamicCTAId)
+      return op.emitError("runtime shard_id must lower to scalar integer");
     // end flagtree tle
 
     // Get the LLVM values for mask
@@ -284,6 +356,26 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
                               << " valueElemNBits = " << valueElemNBits << " "
                               << op.getType());
     SmallVector<Value> loadedVals;
+    // begin flagtree tle
+    if (remoteCTAInfo.hasRemoteCTAId()) {
+      Value ctaId =
+          remoteCTAInfo.constCTAId ? b.i32_val(*remoteCTAInfo.constCTAId)
+                                   : remoteDynamicCTAId;
+      for (size_t idx = 0; idx < numElems; ++idx) {
+        Value pred = llMask ? maskElems[idx] : b.true_val();
+        Value loaded = targetInfo.loadDShared(
+            rewriter, loc, ptrElems[idx], ctaId, valueElemTy, pred, op);
+        if (llMask && other)
+          loaded = b.select(pred, loaded, otherElems[idx]);
+        loadedVals.push_back(loaded);
+      }
+      Type llvmResultStructTy = typeConverter->convertType(op.getType());
+      Value resultStruct = packLLElements(loc, typeConverter, loadedVals,
+                                          rewriter, llvmResultStructTy);
+      rewriter.replaceOp(op, {resultStruct});
+      return success();
+    }
+    // end flagtree tle
     for (size_t vecStart = 0; vecStart < numElems; vecStart += vec) {
       if (auto canonicalVecStart = getCanonicalIndex(vecStart, regMask);
           vecStart != canonicalVecStart) {
@@ -466,11 +558,48 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     unsigned vec = getVectorSize(ptr);
     unsigned elemsPerThread = getTotalElemsPerThread(ptr.getType());
 
-    auto ptrElems = unpackLLElements(loc, llPtr, rewriter);
+    // begin flagtree tle
+    auto remoteCTAInfo = getRemoteCTAInfoFromPtrValue(ptr, rewriter);
+    Value llBasePtr = llPtr;
+    if (remoteCTAInfo.basePtr != ptr) {
+      llBasePtr = rewriter.getRemappedValue(remoteCTAInfo.basePtr);
+      if (!llBasePtr)
+        return op.emitError("failed to remap remote base pointer");
+    }
+    auto ptrElems = unpackLLElements(loc, llBasePtr, rewriter);
     auto valueElems = unpackLLElements(loc, llValue, rewriter);
     assert(ptrElems.size() == valueElems.size());
-    // begin flagtree tle
     const bool isSharedPtr = isSharedPointerValue(ptrElems);
+    if (remoteCTAInfo.hasRemoteCTAId() && !isSharedPtr)
+      return op.emitError("remote shard_id requires shared-memory pointers");
+
+    auto ensureI32 = [&](Value v) -> Value {
+      if (!v)
+        return Value();
+      if (v.getType().isInteger(32))
+        return v;
+      if (auto intTy = dyn_cast<IntegerType>(v.getType())) {
+        if (intTy.getWidth() > 32)
+          return rewriter.create<LLVM::TruncOp>(loc, rewriter.getI32Type(), v);
+        if (intTy.isUnsigned())
+          return rewriter.create<LLVM::ZExtOp>(loc, rewriter.getI32Type(), v);
+        return rewriter.create<LLVM::SExtOp>(loc, rewriter.getI32Type(), v);
+      }
+      return Value();
+    };
+    auto materializeRemoteCTAId = [&](Value v) -> Value {
+      if (!v)
+        return Value();
+      if (Value scalar = ensureI32(v))
+        return scalar;
+      auto elems = unpackLLElements(loc, v, rewriter);
+      if (elems.empty())
+        return Value();
+      return ensureI32(elems.front());
+    };
+    Value remoteDynamicCTAId = materializeRemoteCTAId(remoteCTAInfo.dynamicCTAId);
+    if (remoteCTAInfo.dynamicCTAId && !remoteDynamicCTAId)
+      return op.emitError("runtime shard_id must lower to scalar integer");
     // end flagtree tle
 
     // Determine the vectorization size
@@ -501,6 +630,27 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     Value threadPred =
         emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
     uint32_t regMask = freeVarMasks[str_attr("reg")];
+
+    // begin flagtree tle
+    if (remoteCTAInfo.hasRemoteCTAId()) {
+      Value ctaId =
+          remoteCTAInfo.constCTAId ? b.i32_val(*remoteCTAInfo.constCTAId)
+                                   : remoteDynamicCTAId;
+      for (size_t idx = 0; idx < elemsPerThread; ++idx) {
+        if (auto canonicalIdx = getCanonicalIndex(idx, regMask);
+            idx != canonicalIdx) {
+          continue;
+        }
+        Value pred = threadPred ? threadPred : b.true_val();
+        if (llMask)
+          pred = maybeAnd(rewriter, loc, pred, maskElems[idx]);
+        targetInfo.storeDShared(rewriter, loc, ptrElems[idx], ctaId,
+                                valueElems[idx], pred);
+      }
+      rewriter.eraseOp(op);
+      return success();
+    }
+    // end flagtree tle
 
     const int numVecs = elemsPerThread / vec;
     for (size_t vecStart = 0; vecStart < elemsPerThread; vecStart += vec) {

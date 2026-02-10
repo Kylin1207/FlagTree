@@ -822,6 +822,8 @@ void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
   MLIRContext *context = patterns.getContext();
   patterns
       .add<TleDSLRegionOpPattern, GenericOpPattern<tle::LocalPointersOp>,
+           GenericOpPattern<tle::RemotePointersOp>,
+           GenericOpPattern<tle::DistributedBarrierOp>,
            GenericOpPattern<tle::YieldOp>,
            GenericOpPattern<tle::ExtractAllocatedPtrOp>,
            GenericOpPattern<tle::ExtractAlignedPtrOp>,

@@ -20,6 +20,9 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/DSLRegionOpToLLVM.h"
+// begin flagtree tle
+#include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
+// end flagtree tle
 #include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
 // begin flagtree tle
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
@@ -163,6 +166,8 @@ struct ConvertTritonGPUToLLVM
       mlir::triton::tle::populatePackOpToLLVMPatterns(typeConverter, patterns,
                                                       benefit);
       // begin flagtree tle
+      mlir::triton::tle::populateDistributedBarrierOpToLLVMPatterns(
+          typeConverter, patterns, benefit);
       mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
           typeConverter, targetInfo, patterns, benefit);
       // end flagtree tle

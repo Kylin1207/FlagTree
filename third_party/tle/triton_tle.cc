@@ -153,6 +153,15 @@ void init_triton_tle_ir(py::module &&m) {
              return self.create<tle::LocalPointersOp>(resultTy, memDesc,
                                                       indices);
            })
+      .def("create_distributed_barrier",
+           [](TritonOpBuilder &self) -> void {
+             self.create<tle::DistributedBarrierOp>();
+           })
+      .def("create_remote_pointers",
+           [](TritonOpBuilder &self, Type resultTy, Value src, Value shardId)
+               -> OpState {
+             return self.create<tle::RemotePointersOp>(resultTy, src, shardId);
+           })
       .def("get_memdesc_type",
            [](TritonOpBuilder &self, std::vector<int64_t> shape,
               Type &elementType, Attribute &encoding,

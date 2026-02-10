@@ -315,8 +315,13 @@ static cuLaunchKernelEx_t getLaunchKernelExHandle() {{
 }}
 
 static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int launch_cooperative_grid, int launch_pdl, int clusterDimX, int clusterDimY, int clusterDimZ, int shared_memory, CUstream stream, CUfunction function, CUdeviceptr global_scratch, CUdeviceptr profile_scratch{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
+  (void)num_ctas;
   void *params[] = {{ {', '.join(params)} }};
   if (gridX*gridY*gridZ > 0) {{
+    // begin flagtree tle
+    int cluster_size = clusterDimX * clusterDimY * clusterDimZ;
+    bool use_cluster_launch = cluster_size != 1;
+    // end flagtree tle
     // 4 attributes that we can currently pass maximum
     CUlaunchAttribute launchAttr[4];
     static cuLaunchKernelEx_t cuLaunchKernelExHandle = NULL;
@@ -328,11 +333,13 @@ static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas
     config.gridDimY = gridY;
     config.gridDimZ = gridZ;
 
-    if (num_ctas != 1) {{
+    // begin flagtree tle
+    if (use_cluster_launch) {{
       config.gridDimX *= clusterDimX;
       config.gridDimY *= clusterDimY;
       config.gridDimZ *= clusterDimZ;
     }}
+    // end flagtree tle
 
     config.blockDimX = 32 * num_warps;
     config.blockDimY = 1;
@@ -354,7 +361,8 @@ static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas
       ++num_attrs;
     }}
 
-    if (num_ctas != 1) {{
+    // begin flagtree tle
+    if (use_cluster_launch) {{
       CUlaunchAttribute clusterAttr = {{}};
       clusterAttr.id = CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION;
       clusterAttr.value.clusterDim.x = clusterDimX;
@@ -369,6 +377,7 @@ static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas
       launchAttr[num_attrs] = clusterSchedulingAttr;
       ++num_attrs;
     }}
+    // end flagtree tle
 
     config.numAttrs = num_attrs;
 

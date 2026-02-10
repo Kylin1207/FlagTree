@@ -19,6 +19,8 @@ namespace {
 using namespace mlir;
 namespace ttg = mlir::triton::gpu;
 namespace tle = mlir::triton::tle;
+constexpr llvm::StringLiteral kRemoteShardCarrierAttr =
+    "tle.remote_shard_id_carrier";
 
 struct LocalPointersOpConversion
     : public ConvertOpToLLVMPattern<tle::LocalPointersOp> {
@@ -168,10 +170,28 @@ private:
   const TargetInfoBase &targetInfo;
 };
 
+struct RemotePointersOpConversion
+    : public OpConversionPattern<tle::RemotePointersOp> {
+  using OpConversionPattern<tle::RemotePointersOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(tle::RemotePointersOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto addPtr = rewriter.create<triton::AddPtrOp>(op.getLoc(), op.getType(),
+                                                    op.getSrc(),
+                                                    op.getShardId());
+    addPtr->setAttr(kRemoteShardCarrierAttr, rewriter.getUnitAttr());
+    rewriter.replaceOp(op, addPtr.getResult());
+    return success();
+  }
+};
+
 } // namespace
 
 void tle::populateLocalPointersOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
     RewritePatternSet &patterns, PatternBenefit benefit) {
   patterns.add<LocalPointersOpConversion>(typeConverter, targetInfo, benefit);
+  patterns.add<RemotePointersOpConversion>(typeConverter, patterns.getContext(),
+                                           benefit);
 }

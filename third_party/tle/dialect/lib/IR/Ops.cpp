@@ -113,4 +113,26 @@ LogicalResult LocalPointersOp::verify() {
   return success();
 }
 
+LogicalResult RemotePointersOp::verify() {
+  auto srcTy = dyn_cast<RankedTensorType>(getSrc().getType());
+  if (!srcTy)
+    return emitOpError() << "expects src operand to be a ranked tensor";
+  auto resultTy = dyn_cast<RankedTensorType>(getResult().getType());
+  if (!resultTy)
+    return emitOpError() << "expects result to be a ranked tensor";
+  if (srcTy != resultTy)
+    return emitOpError() << "expects result type to match src type";
+
+  auto ptrTy = dyn_cast<triton::PointerType>(srcTy.getElementType());
+  if (!ptrTy)
+    return emitOpError() << "expects src/result element type to be tt.ptr";
+  if (ptrTy.getAddressSpace() != kSharedMemoryAddressSpace)
+    return emitOpError() << "expects pointers to live in shared memory";
+
+  if (!getShardId().getType().isInteger(32))
+    return emitOpError() << "expects shard_id to be i32";
+
+  return success();
+}
+
 } // namespace mlir::triton::tle

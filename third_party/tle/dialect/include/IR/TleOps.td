@@ -28,6 +28,16 @@ def Tle_LocalPointersOp : Tle_Op<"local_pointers",
   let hasVerifier = 1;
 }
 
+def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier", []> {
+  let assemblyFormat = "attr-dict";
+}
+
+def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure]> {
+  let arguments = (ins TT_Tensor:$src, TT_Int:$shard_id);
+  let results = (outs TT_Tensor:$result);
+  let hasVerifier = 1;
+}
+
 def Tle_DSLRegionOp : Tle_Op<"dsl_region", [IsolatedFromAbove, MemDescViewTrait, RecursiveMemoryEffects]> {
   let arguments = (ins Variadic<Tle_ArgType>:$inputs);
   let results = (outs Variadic<Tle_ArgType>:$outputs);

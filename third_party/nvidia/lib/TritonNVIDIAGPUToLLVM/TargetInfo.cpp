@@ -154,7 +154,9 @@ void TargetInfo::barrier(Location loc, RewriterBase &rewriter,
 
 static Value mapa(RewriterBase &rewriter, Location loc, Value ptr, Value ctaid,
                   Value pred) {
-  return rewriter.create<NVVM::MapaOp>(loc, ptr.getType(), ptr, ctaid);
+  auto clusterPtrTy = LLVM::LLVMPointerType::get(
+      rewriter.getContext(), NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
+  return rewriter.create<NVVM::MapaOp>(loc, clusterPtrTy, ptr, ctaid);
 }
 
 static std::string getConstraintForBitwidth(unsigned bitwidth) {
@@ -272,13 +274,13 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
 
   PTXBuilder builder;
   auto st = builder.create<>("st")
-                ->o("shared::cta", ctaId.has_value())
+                ->o("shared::cluster", ctaId.has_value())
                 .o("shared", !ctaId.has_value())
                 .v(vec, /*predicate=*/vec > 1)
                 .b(elemBitwidth);
-  auto *ptrOpr = builder.newAddrOperand(ptr, "r");
+  auto *ptrOpr = builder.newAddrOperand(ptr, ctaId.has_value() ? "l" : "r");
 
-  if (isConstantTruePred(pred)) {
+  if (isConstantTruePred(pred) && !ctaId.has_value()) {
     b.store(val, ptr, /*align=*/vec * elemBitwidth / 8);
   } else {
     PTXBuilder::Operand *valOpr;
@@ -390,13 +392,13 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
 
   PTXBuilder builder;
   auto ld = builder.create<>("ld")
-                ->o("shared::cta", ctaId.has_value())
+                ->o("shared::cluster", ctaId.has_value())
                 .o("shared", !ctaId.has_value())
                 .v(vec, /*predicate=*/vec > 1)
                 .b(elemBitwidth);
 
   Value load;
-  if (isConstantTruePred(pred)) {
+  if (isConstantTruePred(pred) && !ctaId.has_value()) {
     Type resultTy = vec == 1 ? Type(int_ty(elemBitwidth))
                              : Type(vec_ty(int_ty(elemBitwidth), vec));
     load = b.load(resultTy, ptr, /*align=*/vec * elemBitwidth / 8);
@@ -413,7 +415,8 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
     std::string elemConstraint = "=" + getConstraintForBitwidth(elemBitwidth);
     auto *outOpr = vec == 1 ? builder.newOperand(elemConstraint)
                             : builder.newListOperand(vec, elemConstraint);
-    ld(outOpr, builder.newAddrOperand(ptr, "r")).predicate(pred, "b");
+    ld(outOpr, builder.newAddrOperand(ptr, ctaId.has_value() ? "l" : "r"))
+        .predicate(pred, "b");
 
     Type resultTy =
         vec == 1

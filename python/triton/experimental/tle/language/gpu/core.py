@@ -397,6 +397,9 @@ def local_ptr(
     """
     if not isinstance(buffer, tle.buffered_tensor):
         raise ValueError(f"Buffer parameter must be tle.buffered_tensor, but got {type(buffer)}")
+    remote_buffer_marker = hasattr(buffer, "_tle_remote_shard_id")
+    remote_shard_id = getattr(buffer, "_tle_remote_shard_id", None)
+    remote_scope = getattr(buffer, "_tle_remote_scope", None)
 
     indices = tl._unwrap_if_constexpr(indices)
     if indices is None:
@@ -445,5 +448,16 @@ def local_ptr(
     local_ptr_op = _semantic.builder.create_local_pointers(block_ir, buffer.handle, *handles)
 
     result_tensor = tl.tensor(local_ptr_op.get_result(0), block_type)
+
+    if remote_buffer_marker:
+        # Keep remote semantics attached to the source buffered tensor and
+        # materialize them only when pointer view is requested.
+        from triton.experimental.tle import distributed as _tled_distributed
+        result_tensor = _tled_distributed.remote(
+            result_tensor,
+            remote_shard_id,
+            scope=remote_scope,
+            _semantic=_semantic,
+        )
 
     return result_tensor
