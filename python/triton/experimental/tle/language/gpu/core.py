@@ -379,7 +379,7 @@ def extract_tile(
     # ========================================================================
     # Step 2: 规范化和验证 offsets
     # ========================================================================
-    # ✅ 处理 Triton tuple 类型
+    
     if hasattr(offsets, '__iter__') and not isinstance(offsets, str):
         # 是可迭代对象（list/tuple/tl.tuple）
         offsets_list = list(offsets)  # 转换为 Python list
@@ -390,12 +390,12 @@ def extract_tile(
     # 解包 constexpr 值
     offsets_unwrapped = []
     for o in offsets_list:
-        # ✅ 递归解包所有可能的包装
+       
         val = o
         while hasattr(val, 'value'):
             val = val.value
         
-        # ✅ 也尝试 _unwrap_if_constexpr
+      
         try:
             val = tl._unwrap_if_constexpr(val)
         except:
@@ -412,7 +412,7 @@ def extract_tile(
     # ========================================================================
     # Step 3: 规范化和验证 tile_shape
     # ========================================================================
-    # ✅ 同样处理 tile_shape
+   
     if hasattr(tile_shape, '__iter__') and not isinstance(tile_shape, str):
         tile_shape_list = list(tile_shape)
     else:
