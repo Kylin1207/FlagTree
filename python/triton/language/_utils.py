@@ -12,9 +12,7 @@ def validate_block_shape(shape: List[int]):
     for i, d in enumerate(shape):
         if not isinstance(d, int):
             raise TypeError(f"Shape element {i} must have type `constexpr[int]`, got `constexpr[{type(d)}]")
-        # flagtree backend specialization
-        from triton.runtime.driver import spec
-        if not spec('block_shape_disable_check_power_of_two') and not is_power_of_two(d):
+        if not is_power_of_two(d):
             raise ValueError(f"Shape element {i} must be a power of 2")
         numel *= d
 

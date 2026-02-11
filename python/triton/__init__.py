@@ -4,6 +4,11 @@ __version__ = '3.2.0'
 # ---------------------------------------
 # Note: import order is significant here.
 
+# flagtree backend path specialization
+from triton.runtime.driver import spec_path
+
+spec_path(__path__)
+
 # submodules
 from .runtime import (
     autotune,

@@ -35,8 +35,16 @@ elseif(FLAGTREE_BACKEND STREQUAL "ascend")
   set(CMAKE_CXX_COMPILER clang++)
   set(FLIR_BUILD_INCUBATED ON CACHE BOOL "Build FLIR incubated passes" FORCE)
   set(LLVM_MAJOR_VERSION_21_COMPATIBLE ON CACHE BOOL "AscendNPU-IR build with llvm major version 21 or later" FORCE)
+  add_definitions(-D__LLVM_MAJOR_VERSION_21_COMPATIBLE__)
   add_compile_options("-Wno-deprecated-declarations")
   add_compile_options("-Wno-error=deprecated-declarations")
+  # AscendNPU-IR
+  set(BISHENGIR_ENABLE_A5_UNPUBLISHED_FEATURES ON)
+  set(BISHENGIR_BUILD_STANDALONE_IR_ONLY ON)
+  set(ASCENDNPU_IR_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ascend/AscendNPU-IR)
+  set(ASCENDNPU_IR_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/third_party/ascend/AscendNPU-IR)
+  include_directories(${ASCENDNPU_IR_SRC_DIR}/bishengir/include)
+  include_directories(${ASCENDNPU_IR_BINARY_DIR}/bishengir/include)
 else()
   set(FLIR_BUILD_INCUBATED OFF CACHE BOOL "Build FLIR incubated passes" FORCE)
 endif()
@@ -121,6 +129,9 @@ endif()
 set(BACKEND_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/include)
 if(FLAGTREE_BACKEND AND EXISTS "${BACKEND_INCLUDE_DIR}")
   include_directories(${BACKEND_INCLUDE_DIR})
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+  endif()
 else()
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 endif()
@@ -152,13 +163,6 @@ function(add_triton_object name)
     PRIVATE ${ARG_UNPARSED_ARGUMENTS}
     INTERFACE $<TARGET_OBJECTS:${name}>
   )
-
-  if (FLAGTREE_BACKEND STREQUAL "ascend")
-    set(ASCENDNPU_IR_SRC_DIR ${PROJECT_SOURCE_DIR}/third_party/ascendnpu-ir)
-    set(ASCENDNPU_IR_BINARY_DIR ${PROJECT_BINARY_DIR}/third_party/ascendnpu-ir)
-    include_directories(${ASCENDNPU_IR_SRC_DIR}/bishengir/include)
-    include_directories(${ASCENDNPU_IR_BINARY_DIR}/bishengir/include)
-  endif()
 
   #add_library(${name} OBJECT ${ARG_UNPARSED_ARGUMENTS})
   if(ARG_DEPENDS)
@@ -201,6 +205,10 @@ include_directories(${LLVM_INCLUDE_DIRS})
 if(FLAGTREE_BACKEND AND EXISTS ${BACKEND_INCLUDE_DIR})
   include_directories(${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/include)
   include_directories(${PROJECT_BINARY_DIR}/third_party/${FLAGTREE_BACKEND}/include) # Tablegen'd files
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    include_directories(${PROJECT_SOURCE_DIR}/include)
+    include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+  endif()
 else()
   include_directories(${PROJECT_SOURCE_DIR}/include)
   include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
@@ -225,6 +233,10 @@ if (NOT WIN32 AND NOT APPLE)
   link_libraries(stdc++fs)
 endif()
 
+# AscendNPU-IR
+if(FLAGTREE_BACKEND STREQUAL "ascend")
+  add_subdirectory(${ASCENDNPU_IR_SRC_DIR} ${ASCENDNPU_IR_BINARY_DIR})
+endif()
 
 # -----
 
@@ -409,9 +421,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
                 ${PYTHON_SRC_PATH}/llvm.cc)
   elseif(FLAGTREE_BACKEND STREQUAL "ascend")
     set(PYTHON_ROOT_SRC_PATH ${CMAKE_CURRENT_SOURCE_DIR}/python/src)
+    set(BUFFER_IR_SRC_PATH ${FLAGTREE_BACKEND_DIR}/python/triton/extension/buffer/src)
     include_directories(${PYTHON_ROOT_SRC_PATH})
-    add_library(triton SHARED ${PYTHON_ROOT_SRC_PATH}/main.cc
+    add_library(triton SHARED ${PYTHON_SRC_PATH}/main.cc
                 ${PYTHON_SRC_PATH}/ir.cc
+		${BUFFER_IR_SRC_PATH}/buffer_ir.cc
                 ${PYTHON_ROOT_SRC_PATH}/passes.cc
                 ${PYTHON_ROOT_SRC_PATH}/interpreter.cc
                 ${PYTHON_ROOT_SRC_PATH}/llvm.cc)

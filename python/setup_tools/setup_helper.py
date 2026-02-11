@@ -281,15 +281,21 @@ class CommonUtils:
     @staticmethod
     def get_package_dir(packages):
         package_dict = {}
-        if flagtree_backend and flagtree_backend not in configs.plugin_backends:
-            connection = []
-            backend_triton_path = f"../third_party/{flagtree_backend}/python/"
-            for package in packages:
-                if CommonUtils.skip_package_dir(package):
-                    continue
-                pair = (package, f"{backend_triton_path}{package}")
-                connection.append(pair)
-            package_dict.update(connection)
+        if flagtree_backend:
+            if flagtree_backend not in configs.plugin_backends:
+                connection = []
+                backend_triton_path = f"../third_party/{flagtree_backend}/python/"
+                for package in packages:
+                    if CommonUtils.skip_package_dir(package):
+                        continue
+                    pair = (package, f"{backend_triton_path}{package}")
+                    connection.append(pair)
+                package_dict.update(connection)
+            if flagtree_backend == "ascend":
+                ascend_ext_base = "../third_party/ascend/python/triton/extension"
+                package_dict["triton/extension"] = ascend_ext_base
+                package_dict["triton/extension/buffer"] = f"{ascend_ext_base}/buffer"
+                package_dict["triton/extension/buffer/language"] = f"{ascend_ext_base}/buffer/language"
         try:
             package_dict.update(configs.activated_module.get_package_dir())
         except Exception:

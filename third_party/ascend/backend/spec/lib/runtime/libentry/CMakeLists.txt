@@ -1,4 +1,4 @@
-add_library(entry_ascend SHARED
+add_library(entryC SHARED
   libentry.cpp
 )
-target_compile_options(entry_ascend PRIVATE -fexceptions -frtti)
+target_compile_options(entryC PRIVATE -fexceptions -frtti)
