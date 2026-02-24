@@ -4,7 +4,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "tle/dialect/include/IR/Dialect.h" 
+#include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -841,7 +841,7 @@ public:
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(tle::ExtractTileOp op, 
+  matchAndRewrite(tle::ExtractTileOp op,
                   tle::ExtractTileOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     op->dump();
@@ -851,7 +851,7 @@ public:
     auto srcEnc = srcType.getEncoding();
     if (!srcEnc)
       return failure();
-  
+
     Type retType = op.getType().cloneWithEncoding(srcEnc);
     addNamedAttrs(
         rewriter.replaceOpWithNewOp<tle::ExtractTileOp>(
@@ -859,7 +859,7 @@ public:
         ),
         adaptor.getAttributes()
     );
-    
+
     return success();
   }
 };

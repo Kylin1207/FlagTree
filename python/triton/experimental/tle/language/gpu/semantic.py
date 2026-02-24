@@ -1,4 +1,4 @@
-# flagtree tle
+#flagtree tle
 """
 TLE (Triton Language Extensions) Semantic Analysis Module
 
@@ -113,14 +113,14 @@ class TLESemantic:
         self.validate_local_load_buffer(buffer)
 
     def validate_extract_tile_params(
-        self, 
-        src: tl.tensor, 
-        offsets: Sequence[int], 
+        self,
+        src: tl.tensor,
+        offsets: Sequence[int],
         tile_shape: Sequence[int]
     ) -> None:
         """
         Validate extract_tile parameters.
-    
+
         Checks:
             1. src is tl.tensor
             2. offsets and tile_shape are non-empty
@@ -129,74 +129,74 @@ class TLESemantic:
             5. Offsets are non-negative
             6. Tile fits within source bounds
         """
-       
+
         if not isinstance(src, tl.tensor):
             raise TLESemanticError(
-                f"Source must be tl.tensor, but got {type(src)}", 
+                f"Source must be tl.tensor, but got {type(src)}",
                 "extract_tile"
             )
-    
-       
+
+
         if not offsets or not tile_shape:
             raise TLESemanticError(
-                "Offsets and tile_shape cannot be empty", 
+                "Offsets and tile_shape cannot be empty",
                 "extract_tile"
             )
-    
-        
+
+
         offsets_unwrapped = [
-            o.value if hasattr(o, 'value') else o 
+            o.value if hasattr(o, 'value') else o
             for o in offsets
         ]
         tile_shape_unwrapped = [
-            s.value if hasattr(s, 'value') else s 
+            s.value if hasattr(s, 'value') else s
             for s in tile_shape
         ]
-    
+
         if any(not isinstance(o, int) for o in offsets_unwrapped):
             raise TLESemanticError(
-                "All offsets must be int or constexpr", 
+                "All offsets must be int or constexpr",
                 "extract_tile"
             )
-    
+
         if any(not isinstance(s, int) for s in tile_shape_unwrapped):
             raise TLESemanticError(
-                "All tile_shape dims must be int or constexpr", 
+                "All tile_shape dims must be int or constexpr",
                 "extract_tile"
             )
-    
-        
+
+
         if any(s <= 0 for s in tile_shape_unwrapped):
             raise TLESemanticError(
-                "All tile_shape dims must be positive", 
+                "All tile_shape dims must be positive",
                 "extract_tile"
             )
-    
-        
+
+
         if any(o < 0 for o in offsets_unwrapped):
             raise TLESemanticError(
-                "All offsets must be non-negative", 
+                "All offsets must be non-negative",
                 "extract_tile"
             )
-    
-       
+
+
         src_shape = list(src.type.shape)
-    
+
         if len(offsets_unwrapped) != len(src_shape):
             raise TLESemanticError(
                 f"Offsets rank ({len(offsets_unwrapped)}) must match "
-                f"source rank ({len(src_shape)})", 
+                f"source rank ({len(src_shape)})",
                 "extract_tile"
             )
-    
+
         if len(tile_shape_unwrapped) != len(src_shape):
             raise TLESemanticError(
                 f"Tile_shape rank ({len(tile_shape_unwrapped)}) must match "
-                f"source rank ({len(src_shape)})", 
+                f"source rank ({len(src_shape)})",
                 "extract_tile"
             )
-    
-        
+
+
         if all(isinstance(dim, int) for dim in src_shape):
             for i, (offset, tile_dim, src_dim) in enumerate(
                 zip(offsets_unwrapped, tile_shape_unwrapped, src_shape)
@@ -204,15 +204,15 @@ class TLESemantic:
                 if offset + tile_dim > src_dim:
                     raise TLESemanticError(
                         f"Dimension {i}: offset({offset}) + tile_shape({tile_dim}) "
-                        f"> source({src_dim})", 
+                        f"> source({src_dim})",
                         "extract_tile"
                     )
 
 
     def analyze_extract_tile_operation(
-        self, 
-        src: tl.tensor, 
-        offsets: Sequence[int], 
+        self,
+        src: tl.tensor,
+        offsets: Sequence[int],
         tile_shape: Sequence[int]
     ) -> None:
         """Analyze extract_tile operation semantics"""
