@@ -29,7 +29,15 @@ def Tle_LocalPointersOp : Tle_Op<"local_pointers",
 }
 
 def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier", []> {
+  let arguments = (ins
+    OptionalAttr<StrAttr>:$group_kind,
+    OptionalAttr<I32Attr>:$group_rank,
+    OptionalAttr<DenseI32ArrayAttr>:$group_shape,
+    OptionalAttr<DenseI32ArrayAttr>:$group_axes,
+    OptionalAttr<DenseI32ArrayAttr>:$group_mask
+  );
   let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
 }
 
 def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [Pure]> {

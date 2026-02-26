@@ -3,6 +3,7 @@
 ## Index
 
 - `backlog.md`: milestone and API-level prioritized tasks.
+- `distributed_api_backlog.md`: detailed distributed API implementation plan and acceptance criteria.
 
 ## Rules
 

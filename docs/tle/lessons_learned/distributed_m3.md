@@ -37,3 +37,14 @@ Work scope: distributed barrier, remote DSMEM access, and cluster launch behavio
 - Prevention:
   - All distributed tests should specify expected ownership and synchronization boundaries.
 
+## Lesson 4: Subgroup barrier scratch state must be explicitly initialized
+
+- Issue:
+  - Integration regression appeared as "pytest no response"/hang in subsequent tests.
+- Root cause:
+  - Submesh barrier software path used cluster-shared scratch state that could be stale if not explicitly reset and observed consistently.
+- Resolution:
+  - Add a conservative initialization sequence in lowering (leader reset + pre/post cluster fence) before subgroup arrival logic.
+  - Add explicit `torch.cuda.synchronize()` in subgroup integration test to fail fast on latent async hangs.
+- Prevention:
+  - Any software synchronization primitive over DSMEM must define initialization, phase lifecycle, and test-time synchronization points.

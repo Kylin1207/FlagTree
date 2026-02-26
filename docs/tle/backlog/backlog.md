@@ -6,6 +6,9 @@
 - M4: reshard and collective communication.
 - M5: distributed dot / distributed GEMM contract and lowering.
 
+Detailed execution plan for distributed APIs:
+- `docs/tle/backlog/distributed_api_backlog.md`
+
 ## API-Level Backlog
 
 ### Distributed API (`triton.experimental.tle`)

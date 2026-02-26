@@ -2,7 +2,11 @@
 import pytest
 
 import triton.experimental.tle as tle
-from triton.experimental.tle.distributed import _mesh_to_cluster_dims, _normalize_remote_shard_id
+from triton.experimental.tle.distributed import (
+    _infer_submesh_barrier_group,
+    _mesh_to_cluster_dims,
+    _normalize_remote_shard_id,
+)
 import triton.language.core as tlcore
 
 
@@ -103,6 +107,45 @@ class TestRemoteShardId:
         assert tlcore.is_builtin(tle.remote)
         assert tlcore.is_builtin(tle.distributed_barrier)
 
+    def test_remote_buffered_tensor_attach_metadata(self):
+        class buffered_tensor:
+
+            def __init__(self):
+                self.handle = object()
+                self.type = object()
+
+        buf = buffered_tensor()
+        remote_buf = tle.remote(buf, 1, _semantic=_FakeSemantic())
+
+        assert remote_buf is not buf
+        assert getattr(remote_buf, "_tle_remote_shard_id") == 1
+        assert getattr(remote_buf, "_tle_remote_scope") is None
+        assert not hasattr(buf, "_tle_remote_shard_id")
+
+    def test_remote_buffered_tensor_rejects_duplicate_annotation(self):
+        class buffered_tensor:
+
+            def __init__(self):
+                self.handle = object()
+                self.type = object()
+
+        remote_buf = tle.remote(buffered_tensor(), 0, _semantic=_FakeSemantic())
+        with pytest.raises(ValueError, match="cannot be applied twice"):
+            tle.remote(remote_buf, 1, _semantic=_FakeSemantic())
+
+    def test_remote_buffered_tensor_validates_shard_id_early(self):
+        class buffered_tensor:
+
+            def __init__(self):
+                self.handle = object()
+                self.type = object()
+
+        buf = buffered_tensor()
+        with pytest.raises(ValueError, match="shard_id must be >= 0"):
+            tle.remote(buf, -1, _semantic=_FakeSemantic())
+        with pytest.raises(ValueError, match="tuple shard_id requires scope"):
+            tle.remote(buf, (0, 0), _semantic=_FakeSemantic())
+
 
 class TestClusterDims:
 
@@ -120,3 +163,96 @@ class TestClusterDims:
     def test_mesh_to_cluster_dims_fallback_to_block_axes(self):
         mesh = tle.device_mesh({"device": 4, "block": [("block_x", 2), ("block_y", 2)]})
         assert _mesh_to_cluster_dims(mesh) == (2, 2, 1)
+
+    def test_mesh_to_cluster_dims_submesh_keeps_launch_view(self):
+        mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
+        sub = mesh[0, :]
+        assert sub.shape == (2,)
+        assert _mesh_to_cluster_dims(sub) == (2, 2, 1)
+
+
+class _FakeOptions:
+
+    def __init__(self):
+        self.num_ctas = 1
+        self.cluster_dims = (1, 1, 1)
+
+
+class _FakeBuilder:
+
+    def __init__(self):
+        self.options = _FakeOptions()
+        self.distributed_barrier_calls = 0
+        self.distributed_barrier_group_args = []
+        self.barrier_calls = 0
+
+    def create_distributed_barrier(self, *args):
+        self.distributed_barrier_calls += 1
+        self.distributed_barrier_group_args.append(tuple(args))
+
+    def create_barrier(self):
+        self.barrier_calls += 1
+
+
+class _LegacyDistributedBarrierBuilder(_FakeBuilder):
+
+    def create_distributed_barrier(self):
+        self.distributed_barrier_calls += 1
+        self.distributed_barrier_group_args.append(tuple())
+
+
+class _FakeSemantic:
+
+    def __init__(self, builder=None):
+        self.builder = _FakeBuilder() if builder is None else builder
+
+
+class _LegacyBarrierSemantic:
+
+    def __init__(self):
+        self.builder = _LegacyDistributedBarrierBuilder()
+
+
+class TestDistributedBarrierScope:
+
+    def test_distributed_barrier_full_cluster_mesh(self):
+        mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 1)]})
+        semantic = _FakeSemantic()
+        tle.distributed_barrier(mesh=mesh, _semantic=semantic)
+        assert semantic.builder.options.cluster_dims == (2, 1, 1)
+        assert semantic.builder.distributed_barrier_calls == 1
+        assert semantic.builder.distributed_barrier_group_args == [tuple()]
+
+    def test_distributed_barrier_submesh_emits_group_descriptor(self):
+        mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
+        sub = mesh[0, :]
+        semantic = _FakeSemantic()
+        tle.distributed_barrier(mesh=sub, _semantic=semantic)
+        assert semantic.builder.distributed_barrier_calls == 1
+        args = semantic.builder.distributed_barrier_group_args[0]
+        assert args[0] == "submesh"
+        assert args[1] == [2]
+        assert args[2] == [1]
+        assert args[3] == [0, 1]
+
+    def test_distributed_barrier_submesh_requires_group_aware_builder(self):
+        mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
+        sub = mesh[0, :]
+        semantic = _LegacyBarrierSemantic()
+        with pytest.raises(NotImplementedError, match="requires rebuilt TLE extension"):
+            tle.distributed_barrier(mesh=sub, _semantic=semantic)
+
+    def test_infer_submesh_barrier_group(self):
+        mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
+        sub = mesh[0, :]
+        group = _infer_submesh_barrier_group(sub, (2, 2, 1))
+        assert group is not None
+        assert group.kind == "submesh"
+        assert group.rank == 1
+        assert group.shape == (2,)
+        assert group.axes == (1,)
+        assert group.mask == (0, 1)
+
+    def test_infer_submesh_barrier_group_full_mesh_returns_none(self):
+        mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
+        assert _infer_submesh_barrier_group(mesh, (2, 2, 1)) is None

@@ -14,9 +14,15 @@ This folder is the canonical workspace for TLE planning and execution docs.
 
 - Design overview: `docs/tle/design/README.md`
 - Distributed API design: `docs/tle/design/distributed_api.md`
+- Distributed sub-mesh barrier plan: `docs/tle/design/distributed_barrier_submesh.md`
+- Design reviews index: `docs/tle/design/reviews/README.md`
+- Distributed API review: `docs/tle/design/reviews/distributed_api_design_review_2026-02-24.md`
 - Language GPU API design: `docs/tle/design/language_gpu_api.md`
 - Workflow overview: `docs/tle/workflow/README.md`
+- Agentic playbook: `docs/tle/workflow/agentic_development_playbook.md`
+- Agentic workflow flowchart: `docs/tle/workflow/agentic_standard_workflow.drawio`
 - Active backlog: `docs/tle/backlog/backlog.md`
+- Distributed API detailed backlog: `docs/tle/backlog/distributed_api_backlog.md`
 - Lessons learned index: `docs/tle/lessons_learned/README.md`
 
 ## Document Lifecycle

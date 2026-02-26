@@ -36,6 +36,8 @@ class device_mesh:
         _shape: Sequence[int] | None = None,
         _dim_names: Sequence[str] | None = None,
         _physical_ids: Sequence[int] | None = None,
+        _launch_shape: Sequence[int] | None = None,
+        _launch_dim_names: Sequence[str] | None = None,
     ):
         if topology is None:
             if _shape is None or _dim_names is None or _physical_ids is None:
@@ -43,6 +45,10 @@ class device_mesh:
             self._shape = tuple(_shape)
             self._dim_names = tuple(_dim_names)
             self._physical_ids = tuple(_physical_ids)
+            self._launch_shape = tuple(_launch_shape if _launch_shape is not None else _shape)
+            self._launch_dim_names = tuple(
+                _launch_dim_names if _launch_dim_names is not None else _dim_names
+            )
             return
 
         if not isinstance(topology, Mapping):
@@ -65,6 +71,8 @@ class device_mesh:
         self._shape = tuple(shape)
         self._dim_names = tuple(dim_names)
         self._physical_ids = tuple(range(_prod(shape)))
+        self._launch_shape = self._shape
+        self._launch_dim_names = self._dim_names
 
     @staticmethod
     def _parse_level(level_name: str, level_desc: Any) -> tuple[list[int], list[str]]:
@@ -109,6 +117,14 @@ class device_mesh:
         return self._physical_ids
 
     @property
+    def launch_shape(self) -> tuple[int, ...]:
+        return self._launch_shape
+
+    @property
+    def launch_dim_names(self) -> tuple[str, ...]:
+        return self._launch_dim_names
+
+    @property
     def size(self) -> int:
         return len(self._physical_ids)
 
@@ -134,7 +150,12 @@ class device_mesh:
         else:
             new_dim_names = tuple(f"dim{i}" for i in range(len(new_shape)))
         return device_mesh(
-            None, _shape=new_shape, _dim_names=new_dim_names, _physical_ids=self._physical_ids
+            None,
+            _shape=new_shape,
+            _dim_names=new_dim_names,
+            _physical_ids=self._physical_ids,
+            _launch_shape=self._launch_shape,
+            _launch_dim_names=self._launch_dim_names,
         )
 
     def _normalize_key(self, key: Any) -> tuple[Any, ...]:
@@ -200,6 +221,8 @@ class device_mesh:
             _shape=new_shape,
             _dim_names=new_dim_names,
             _physical_ids=tuple(new_physical_ids),
+            _launch_shape=self._launch_shape,
+            _launch_dim_names=self._launch_dim_names,
         )
 
     def __repr__(self):
@@ -385,15 +408,81 @@ def _shape_to_cluster_dims(shape: Sequence[int]) -> tuple[int, int, int]:
 def _mesh_to_cluster_dims(mesh: device_mesh) -> tuple[int, int, int]:
     # Prefer explicit cluster axes, then block axes, then fallback to full mesh.
     cluster_axes = [
-        size for name, size in zip(mesh.dim_names, mesh.shape) if "cluster" in name
+        size for name, size in zip(mesh.launch_dim_names, mesh.launch_shape) if "cluster" in name
     ]
     if not cluster_axes:
         cluster_axes = [
-            size for name, size in zip(mesh.dim_names, mesh.shape) if "block" in name
+            size for name, size in zip(mesh.launch_dim_names, mesh.launch_shape) if "block" in name
         ]
     if not cluster_axes:
-        cluster_axes = list(mesh.shape)
+        cluster_axes = list(mesh.launch_shape)
     return _shape_to_cluster_dims(cluster_axes)
+
+
+@dataclass(frozen=True)
+class _BarrierGroupDescriptor:
+    kind: str
+    rank: int
+    shape: tuple[int, ...]
+    axes: tuple[int, ...]
+    mask: tuple[int, ...]
+
+
+def _infer_submesh_barrier_group(
+    mesh: device_mesh,
+    cluster_dims: Sequence[int],
+) -> _BarrierGroupDescriptor | None:
+    cluster_size = _prod(cluster_dims)
+    if mesh.size == cluster_size:
+        return None
+    if mesh.size > cluster_size:
+        raise ValueError(
+            f"mesh size ({mesh.size}) exceeds inferred cluster size ({cluster_size})"
+        )
+
+    launch_size = _prod(mesh.launch_shape)
+    if launch_size != cluster_size:
+        raise NotImplementedError(
+            "sub-mesh distributed_barrier currently requires launch mesh domain "
+            f"to match inferred cluster size; launch_size={launch_size}, cluster_size={cluster_size}"
+        )
+
+    if not mesh.dim_names:
+        raise NotImplementedError(
+            "scalar sub-mesh barrier is not implemented yet; provide at least one sliced axis"
+        )
+
+    launch_name_to_axis = {name: i for i, name in enumerate(mesh.launch_dim_names)}
+    if any(name not in launch_name_to_axis for name in mesh.dim_names):
+        raise NotImplementedError(
+            "sub-mesh barrier currently supports slicing-derived meshes with "
+            "axis names inherited from launch mesh"
+        )
+
+    axes = tuple(int(launch_name_to_axis[name]) for name in mesh.dim_names)
+    if len(set(axes)) != len(axes):
+        raise ValueError(f"invalid subgroup axes (duplicate launch axes): {axes}")
+
+    shape = tuple(int(v) for v in mesh.shape)
+    if not shape or any(v <= 0 for v in shape):
+        raise ValueError(f"invalid subgroup shape inferred from mesh: {shape}")
+
+    mask = tuple(int(v) for v in mesh.physical_ids)
+    if not mask:
+        raise ValueError("sub-mesh barrier group mask cannot be empty")
+    if any(v < 0 or v >= cluster_size for v in mask):
+        raise ValueError(
+            "sub-mesh barrier group mask contains out-of-range cluster member ids: "
+            f"mask={mask}, cluster_size={cluster_size}"
+        )
+
+    return _BarrierGroupDescriptor(
+        kind="submesh",
+        rank=len(shape),
+        shape=shape,
+        axes=axes,
+        mask=mask,
+    )
 
 
 def _apply_mesh_cluster_launch(mesh: device_mesh, _semantic) -> tuple[int, int, int]:
@@ -428,9 +517,33 @@ def distributed_barrier(mesh: device_mesh | None = None, _semantic=None):
     mesh = tl._unwrap_if_constexpr(mesh)
     if mesh is not None and not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh or None, got {type(mesh).__name__}")
+    subgroup = None
     if mesh is not None:
-        _apply_mesh_cluster_launch(mesh, _semantic)
+        cluster_dims = _apply_mesh_cluster_launch(mesh, _semantic)
+        subgroup = _infer_submesh_barrier_group(mesh, cluster_dims)
     builder = _semantic.builder
+    if subgroup is not None:
+        if not hasattr(builder, "create_distributed_barrier"):
+            raise NotImplementedError(
+                "sub-mesh distributed_barrier requires TLE builder support; "
+                f"inferred subgroup descriptor: rank={subgroup.rank}, "
+                f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}"
+            )
+        try:
+            builder.create_distributed_barrier(
+                subgroup.kind,
+                list(subgroup.shape),
+                list(subgroup.axes),
+                list(subgroup.mask),
+            )
+            return None
+        except TypeError as exc:
+            raise NotImplementedError(
+                "sub-mesh distributed_barrier requires rebuilt TLE extension with "
+                "group-aware create_distributed_barrier(group_kind, group_shape, group_axes, group_mask); "
+                f"inferred subgroup descriptor: rank={subgroup.rank}, "
+                f"shape={subgroup.shape}, axes={subgroup.axes}, size={len(subgroup.mask)}"
+            ) from exc
     if hasattr(builder, "create_distributed_barrier"):
         builder.create_distributed_barrier()
     else:
@@ -478,6 +591,33 @@ def _normalize_remote_shard_id(
     return linear
 
 
+def _is_buffered_tensor_like(value: Any) -> bool:
+    return (
+        not isinstance(value, tl.tensor)
+        and value.__class__.__name__ == "buffered_tensor"
+        and hasattr(value, "handle")
+        and hasattr(value, "type")
+    )
+
+
+def _normalize_compile_time_remote_shard_id(
+    shard_id: int | tuple[int, ...] | list[int],
+    scope: device_mesh | None,
+) -> int:
+    linear_shard_id = _normalize_remote_shard_id(shard_id, scope)
+    if linear_shard_id > 0x7FFFFFFF:
+        raise ValueError(f"linearized shard_id {linear_shard_id} exceeds int32 range")
+    return linear_shard_id
+
+
+def _normalize_runtime_remote_shard_id_tensor(shard_id_tensor: tl.tensor) -> tl.tensor:
+    if not shard_id_tensor.dtype.is_int() or shard_id_tensor.dtype.primitive_bitwidth != 32:
+        raise TypeError("runtime shard_id must be a scalar int32 tensor/value")
+    if shard_id_tensor.shape:
+        raise ValueError("runtime shard_id must be scalar (shape=())")
+    return shard_id_tensor
+
+
 @tl.builtin
 def remote(
     tensor,
@@ -506,12 +646,24 @@ def remote(
 
     # Buffered tensor path: carry remote metadata and let `local_ptr` materialize
     # remote pointers later.
-    if (
-        not isinstance(tensor, tl.tensor)
-        and tensor.__class__.__name__ == "buffered_tensor"
-        and hasattr(tensor, "handle")
-        and hasattr(tensor, "type")
-    ):
+    if _is_buffered_tensor_like(tensor):
+        if hasattr(tensor, "_tle_remote_shard_id"):
+            raise ValueError(
+                "remote(buffered_tensor, ...) cannot be applied twice; "
+                "materialize pointer views with tleg.local_ptr(remote_buffer, indices)"
+            )
+        if isinstance(shard_id, (int, tuple, list)):
+            shard_id = _normalize_compile_time_remote_shard_id(shard_id, scope)
+        else:
+            shard_id_tensor = shard_id if isinstance(shard_id, tl.tensor) else None
+            if shard_id_tensor is None:
+                if _semantic is None:
+                    raise TypeError(
+                        "runtime shard_id for remote(buffered_tensor, ...) must be scalar int32 "
+                        "and requires JIT semantic context for materialization"
+                    )
+                shard_id_tensor = _semantic.to_tensor(shard_id)
+            shard_id = _normalize_runtime_remote_shard_id_tensor(shard_id_tensor)
         remote_buffer = copy.copy(tensor)
         setattr(remote_buffer, "_tle_remote_shard_id", shard_id)
         setattr(remote_buffer, "_tle_remote_scope", scope)
@@ -526,19 +678,14 @@ def remote(
 
     # Compile-time constant shard id path (existing behavior).
     if isinstance(shard_id, (int, tuple, list)):
-        linear_shard_id = _normalize_remote_shard_id(shard_id, scope)
-        if linear_shard_id > 0x7FFFFFFF:
-            raise ValueError(f"linearized shard_id {linear_shard_id} exceeds int32 range")
+        linear_shard_id = _normalize_compile_time_remote_shard_id(shard_id, scope)
         tensor.handle.set_attr("tle.remote_cta_id", _semantic.builder.get_int32_attr(linear_shard_id))
         return tensor
 
     # Runtime shard id path. This materializes a TLE op that carries the
     # runtime i32 shard id through lowering.
     shard_id_tensor = shard_id if isinstance(shard_id, tl.tensor) else _semantic.to_tensor(shard_id)
-    if not shard_id_tensor.dtype.is_int() or shard_id_tensor.dtype.primitive_bitwidth != 32:
-        raise TypeError("runtime shard_id must be a scalar int32 tensor/value")
-    if shard_id_tensor.shape:
-        raise ValueError("runtime shard_id must be scalar (shape=())")
+    shard_id_tensor = _normalize_runtime_remote_shard_id_tensor(shard_id_tensor)
 
     # Represent runtime shard_id with a marked addptr op. The lowering rewrites
     # pointer arithmetic to use the original base pointer and consumes the

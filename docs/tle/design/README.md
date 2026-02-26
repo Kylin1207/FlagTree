@@ -6,8 +6,11 @@ This directory stores design intent, API contracts, and lowering behavior.
 
 ## Index
 
-- `distributed_api.md`: distributed API contracts, implementation mapping, and gaps.
+- `distributed_api.md`: distributed API detailed contracts, lowering model, and test strategy.
+- `distributed_barrier_submesh.md`: `TLE-DIST-002` subgroup barrier lowering phased plan.
 - `language_gpu_api.md`: `tle.language.gpu` function/type API contracts and gaps.
+- `reviews/README.md`: design review index.
+- `reviews/distributed_api_design_review_2026-02-24.md`: distributed API design review findings and decisions.
 
 ## Design Review Checklist
 

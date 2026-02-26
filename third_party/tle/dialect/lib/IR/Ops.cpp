@@ -3,6 +3,7 @@
 #include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 namespace mlir::triton::tle {
@@ -109,6 +110,86 @@ LogicalResult LocalPointersOp::verify() {
   if (indexShape != resultShape)
     return emitOpError()
            << "expects indices return tensor shape to match result shape";
+
+  return success();
+}
+
+LogicalResult DistributedBarrierOp::verify() {
+  auto *op = getOperation();
+  auto kindAttr = op->getAttrOfType<StringAttr>("group_kind");
+  auto rankAttr = op->getAttrOfType<IntegerAttr>("group_rank");
+  auto shapeAttr = op->getAttrOfType<DenseI32ArrayAttr>("group_shape");
+  auto axesAttr = op->getAttrOfType<DenseI32ArrayAttr>("group_axes");
+  auto maskAttr = op->getAttrOfType<DenseI32ArrayAttr>("group_mask");
+
+  const bool hasAnyGroupMeta =
+      rankAttr || shapeAttr || axesAttr || maskAttr || kindAttr;
+  if (!hasAnyGroupMeta)
+    return success();
+
+  if (!kindAttr) {
+    return emitOpError()
+           << "group_kind is required when distributed barrier group metadata "
+              "is provided";
+  }
+
+  StringRef kind = kindAttr.getValue();
+  if (kind != "cluster" && kind != "submesh") {
+    return emitOpError()
+           << "group_kind must be 'cluster' or 'submesh', got '" << kind
+           << "'";
+  }
+
+  if (kind == "cluster") {
+    if (rankAttr || shapeAttr || axesAttr || maskAttr) {
+      return emitOpError()
+             << "cluster group_kind does not accept group_rank/group_shape/"
+                "group_axes/group_mask attrs";
+    }
+    return success();
+  }
+
+  if (!rankAttr || !shapeAttr || !axesAttr) {
+    return emitOpError()
+           << "submesh group_kind requires group_rank/group_shape/group_axes";
+  }
+  if (!rankAttr.getType().isInteger(32)) {
+    return emitOpError() << "group_rank must be i32";
+  }
+
+  int32_t rank = static_cast<int32_t>(rankAttr.getInt());
+  if (rank <= 0) {
+    return emitOpError() << "group_rank must be > 0";
+  }
+  if (static_cast<int32_t>(shapeAttr.size()) != rank) {
+    return emitOpError() << "group_shape length (" << shapeAttr.size()
+                         << ") must match group_rank (" << rank << ")";
+  }
+  if (static_cast<int32_t>(axesAttr.size()) != rank) {
+    return emitOpError() << "group_axes length (" << axesAttr.size()
+                         << ") must match group_rank (" << rank << ")";
+  }
+
+  llvm::SmallSet<int32_t, 8> seenAxes;
+  for (int32_t dim : shapeAttr.asArrayRef()) {
+    if (dim <= 0)
+      return emitOpError() << "group_shape entries must be > 0";
+  }
+  for (int32_t axis : axesAttr.asArrayRef()) {
+    if (axis < 0)
+      return emitOpError() << "group_axes entries must be >= 0";
+    if (!seenAxes.insert(axis).second) {
+      return emitOpError() << "group_axes entries must be unique";
+    }
+  }
+  if (maskAttr) {
+    if (maskAttr.asArrayRef().empty())
+      return emitOpError() << "group_mask cannot be empty";
+    for (int32_t id : maskAttr.asArrayRef()) {
+      if (id < 0)
+        return emitOpError() << "group_mask entries must be >= 0";
+    }
+  }
 
   return success();
 }

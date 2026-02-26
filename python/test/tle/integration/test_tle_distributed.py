@@ -18,6 +18,11 @@ import triton.experimental.tle as tled
 import triton.experimental.tle.language.gpu as tleg
 
 BLOCK_CLUSTER_MESH = tled.device_mesh({"block_cluster": [("cluster_x", 2)]})
+BLOCK_CLUSTER_MESH_2X2 = tled.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
+BLOCK_CLUSTER_SUBMESH_ROW0 = BLOCK_CLUSTER_MESH_2X2[0, :]
+BLOCK_CLUSTER_SUBMESH_ROW1 = BLOCK_CLUSTER_MESH_2X2[1, :]
+BLOCK_CLUSTER_SUBMESH_COL0 = BLOCK_CLUSTER_MESH_2X2[:, 0]
+BLOCK_CLUSTER_SUBMESH_COL1 = BLOCK_CLUSTER_MESH_2X2[:, 1]
 
 
 def _require_hopper_cuda():
@@ -75,6 +80,85 @@ def _remote_peer_smem_kernel(out_ptr, shard_id_ptr, mesh: tl.constexpr, BLOCK: t
     tl.store(out_ptr + pid * BLOCK + offs, peer_vals)
 
 
+@triton.jit
+def _submesh_barrier_lowering_kernel(out_ptr, mesh: tl.constexpr, BLOCK: tl.constexpr):
+    offs = tl.arange(0, BLOCK)
+    pid = tl.program_id(0)
+    vals = tl.full((BLOCK, ), pid, tl.int32)
+    tled.distributed_barrier(mesh)
+    tl.store(out_ptr + pid * BLOCK + offs, vals)
+
+
+@triton.jit
+def _distributed_barrier_multiblock_counter_kernel(counter_ptr, out_ptr, mesh: tl.constexpr):
+    pid = tl.program_id(0)
+    cluster_id = pid // 2
+    counter_lane_ptr = counter_ptr + cluster_id
+
+    tl.atomic_add(counter_lane_ptr, 1)
+    tled.distributed_barrier(mesh)
+
+    seen = tl.load(counter_lane_ptr)
+    tl.store(out_ptr + pid, seen)
+
+
+@triton.jit
+def _submesh_row_group_barrier_kernel(
+    counter_row0_ptr,
+    counter_row1_ptr,
+    out_row0_ptr,
+    out_row1_ptr,
+    row0_mesh: tl.constexpr,
+    row1_mesh: tl.constexpr,
+):
+    pid = tl.program_id(0)
+
+    if pid < 2:
+        tl.atomic_add(counter_row0_ptr, 1)
+        tled.distributed_barrier(row0_mesh)
+        seen_row0 = tl.load(counter_row0_ptr)
+        tl.store(out_row0_ptr + pid, seen_row0)
+    else:
+        tl.store(out_row0_ptr + pid, -1)
+
+    if pid >= 2:
+        tl.atomic_add(counter_row1_ptr, 3)
+        tled.distributed_barrier(row1_mesh)
+        seen_row1 = tl.load(counter_row1_ptr)
+        tl.store(out_row1_ptr + pid, seen_row1)
+    else:
+        tl.store(out_row1_ptr + pid, -1)
+
+
+@triton.jit
+def _submesh_col_group_barrier_kernel(
+    counter_col0_ptr,
+    counter_col1_ptr,
+    out_col0_ptr,
+    out_col1_ptr,
+    col0_mesh: tl.constexpr,
+    col1_mesh: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    is_col0 = (pid & 1) == 0
+
+    if is_col0:
+        tl.atomic_add(counter_col0_ptr, 1)
+        tled.distributed_barrier(col0_mesh)
+        seen_col0 = tl.load(counter_col0_ptr)
+        tl.store(out_col0_ptr + pid, seen_col0)
+    else:
+        tl.store(out_col0_ptr + pid, -1)
+
+    if not is_col0:
+        tl.atomic_add(counter_col1_ptr, 5)
+        tled.distributed_barrier(col1_mesh)
+        seen_col1 = tl.load(counter_col1_ptr)
+        tl.store(out_col1_ptr + pid, seen_col1)
+    else:
+        tl.store(out_col1_ptr + pid, -1)
+
+
 class TestTLEDistributed:
 
     def test_distributed_barrier_copy(self):
@@ -128,3 +212,145 @@ class TestTLEDistributed:
             )
         expected = torch.cat(expected_chunks, dim=0)
         torch.testing.assert_close(out, expected, atol=0.0, rtol=0.0)
+
+    @pytest.mark.parametrize("submesh", [BLOCK_CLUSTER_SUBMESH_ROW0, BLOCK_CLUSTER_SUBMESH_COL0])
+    def test_distributed_barrier_submesh_lowering(self, submesh):
+        block = 32
+        out = torch.empty((4 * block, ), device="cuda", dtype=torch.int32)
+
+        compiled = _submesh_barrier_lowering_kernel.warmup(
+            out,
+            mesh=submesh,
+            BLOCK=block,
+            grid=(1, ),
+            num_ctas=1,
+            num_warps=4,
+        )
+        assert compiled.metadata.cluster_dims == (2, 2, 1)
+        ptx = compiled.asm["ptx"]
+        assert "atom.shared::cluster.add.u32" in ptx
+
+        _submesh_barrier_lowering_kernel[(1, )](
+            out, mesh=submesh, BLOCK=block, num_ctas=1, num_warps=4
+        )
+        torch.cuda.synchronize()
+
+    def test_distributed_barrier_multiblock_counter(self):
+        grid = 2
+        cluster_size = 2
+        num_programs = grid * cluster_size
+
+        counter = torch.zeros((grid, ), device="cuda", dtype=torch.int32)
+        out = torch.empty((num_programs, ), device="cuda", dtype=torch.int32)
+
+        compiled = _distributed_barrier_multiblock_counter_kernel.warmup(
+            counter,
+            out,
+            mesh=BLOCK_CLUSTER_MESH,
+            grid=(grid, ),
+            num_ctas=1,
+            num_warps=4,
+        )
+        assert compiled.metadata.cluster_dims == (2, 1, 1)
+
+        _distributed_barrier_multiblock_counter_kernel[(grid, )](
+            counter,
+            out,
+            mesh=BLOCK_CLUSTER_MESH,
+            num_ctas=1,
+            num_warps=4,
+        )
+        torch.cuda.synchronize()
+
+        expected_counter = torch.full_like(counter, cluster_size)
+        expected_out = torch.full_like(out, cluster_size)
+        torch.testing.assert_close(counter, expected_counter, atol=0, rtol=0)
+        torch.testing.assert_close(out, expected_out, atol=0, rtol=0)
+
+    def test_distributed_barrier_row_group_independence(self):
+        grid = 2
+        counter_row0 = torch.zeros((1, ), device="cuda", dtype=torch.int32)
+        counter_row1 = torch.zeros((1, ), device="cuda", dtype=torch.int32)
+        out_row0 = torch.empty((4, ), device="cuda", dtype=torch.int32)
+        out_row1 = torch.empty((4, ), device="cuda", dtype=torch.int32)
+
+        compiled = _submesh_row_group_barrier_kernel.warmup(
+            counter_row0,
+            counter_row1,
+            out_row0,
+            out_row1,
+            row0_mesh=BLOCK_CLUSTER_SUBMESH_ROW0,
+            row1_mesh=BLOCK_CLUSTER_SUBMESH_ROW1,
+            grid=(grid, ),
+            num_ctas=1,
+            num_warps=4,
+        )
+        assert compiled.metadata.cluster_dims == (2, 2, 1)
+        assert compiled.asm["ptx"].count("atom.shared::cluster.add.u32") >= 2
+
+        _submesh_row_group_barrier_kernel[(grid, )](
+            counter_row0,
+            counter_row1,
+            out_row0,
+            out_row1,
+            row0_mesh=BLOCK_CLUSTER_SUBMESH_ROW0,
+            row1_mesh=BLOCK_CLUSTER_SUBMESH_ROW1,
+            num_ctas=1,
+            num_warps=4,
+        )
+        torch.cuda.synchronize()
+
+        row0_count = int(counter_row0.cpu().item())
+        row1_count = int(counter_row1.cpu().item())
+        assert row0_count > 0
+        assert row1_count == 3 * row0_count
+        torch.testing.assert_close(
+            out_row0, torch.tensor([row0_count, row0_count, -1, -1], device="cuda", dtype=torch.int32)
+        )
+        torch.testing.assert_close(
+            out_row1, torch.tensor([-1, -1, row1_count, row1_count], device="cuda", dtype=torch.int32)
+        )
+
+    def test_distributed_barrier_col_group_independence(self):
+        grid = 2
+        counter_col0 = torch.zeros((1, ), device="cuda", dtype=torch.int32)
+        counter_col1 = torch.zeros((1, ), device="cuda", dtype=torch.int32)
+        out_col0 = torch.empty((4, ), device="cuda", dtype=torch.int32)
+        out_col1 = torch.empty((4, ), device="cuda", dtype=torch.int32)
+
+        compiled = _submesh_col_group_barrier_kernel.warmup(
+            counter_col0,
+            counter_col1,
+            out_col0,
+            out_col1,
+            col0_mesh=BLOCK_CLUSTER_SUBMESH_COL0,
+            col1_mesh=BLOCK_CLUSTER_SUBMESH_COL1,
+            grid=(grid, ),
+            num_ctas=1,
+            num_warps=4,
+        )
+        assert compiled.metadata.cluster_dims == (2, 2, 1)
+        assert compiled.asm["ptx"].count("atom.shared::cluster.add.u32") >= 2
+
+        _submesh_col_group_barrier_kernel[(grid, )](
+            counter_col0,
+            counter_col1,
+            out_col0,
+            out_col1,
+            col0_mesh=BLOCK_CLUSTER_SUBMESH_COL0,
+            col1_mesh=BLOCK_CLUSTER_SUBMESH_COL1,
+            num_ctas=1,
+            num_warps=4,
+        )
+        torch.cuda.synchronize()
+
+        col0_count = int(counter_col0.cpu().item())
+        col1_count = int(counter_col1.cpu().item())
+        assert col0_count > 0
+        assert col1_count == 5 * col0_count
+        torch.testing.assert_close(
+            out_col0, torch.tensor([col0_count, -1, col0_count, -1], device="cuda", dtype=torch.int32)
+        )
+        torch.testing.assert_close(
+            out_col1, torch.tensor([-1, col1_count, -1, col1_count], device="cuda", dtype=torch.int32)
+        )
