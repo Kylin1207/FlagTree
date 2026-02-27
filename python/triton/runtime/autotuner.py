@@ -139,52 +139,35 @@ class Autotuner(KernelInterface):
                 block_size = next_power_of_2(tensor_size)
                 if knobs.autotuning.adjust_block_size_print:
                     print(f'[AABS] tl.load: Adjust {block_size_name} {current[block_size_name]} => {block_size} because {block_size_name} > {tensor_size}')
-                self.adjusted_block_names.add(block_size_name)
                 current[block_size_name] = block_size
                 config.kwargs[block_size_name] = block_size
 
-    '''
-    def adjust_block_size_tma_device(self, current, config, block_size_name, tensor_names: List[str]):
-        block_size = None
-        for tensor_name in tensor_names:
-            tensor = self.nargs[tensor_name]
-            block_size = current[block_size_name]
-            #elem_type_size = tensor.element_size()
-            #if int(elem_type_size * block_size) < 16 and \
-            #    block_size_name in self.adjusted_block_names:
-            #    from triton import next_power_of_2
-            #    block_size = next_power_of_2(int(16 / elem_type_size))
-            if block_size < 16 and block_size_name in self.adjusted_block_names:
-                block_size = 16
-                if knobs.autotuning.adjust_block_size_print:
-                    print(f'[AABS] TMA device: Adjust {block_size_name} {current[block_size_name]} => {block_size} because {block_size_name} < 16')
-                current[block_size_name] = block_size
-                config.kwargs[block_size_name] = block_size
-    '''
 
-    def adjust_block_size_tma_host(self, current, config, desc_name, block_size_names, block_k_sets: Set[str]):
+    def adjust_block_size_tma(self, current, config, desc_name, block_size_names, block_k_sets: Set[str]):
         from triton.tools.tensor_descriptor import TensorDescriptor
         import torch
         from triton import next_power_of_2
         # 对每个 TensorDescriptor 输入参数，检查与之 block shape 相关的 BLOCK_XXX 参数大小
-        if (desc_name in self.nargs) and \
-            isinstance(self.nargs[desc_name], TensorDescriptor) and \
-            isinstance(self.nargs[desc_name].base, torch.Tensor):
-            #elem_type_size = self.nargs[desc_name].base.element_size()
-
-            base: torch.Tensor = self.nargs[desc_name].base
-
-            if len(base.shape) == len(block_size_names):
-                # 检查 TMA Descriptor 中 tensor 的形状，根据形状调整 BLOCK
-                for tensor_size, block_size_name in zip(base.shape, block_size_names):
-                    block_size = current[block_size_name]
-                    if block_size > tensor_size:
-                        block_size = next_power_of_2(tensor_size)
-                        if knobs.autotuning.adjust_block_size_print:
-                            print(f'[AABS] TMA host: Adjust {block_size_name} {current[block_size_name]} => {block_size} because {block_size_name} > {tensor_size}')
-                        self.adjusted_block_names.add(block_size_name)
-                        current[block_size_name] = block_size
-                        config.kwargs[block_size_name] = block_size
+        if desc_name not in self.nargs:
+            return
+        if not isinstance(self.nargs[desc_name], TensorDescriptor):
+            return
+        if not isinstance(self.nargs[desc_name].base, torch.Tensor):
+            return
+        base: torch.Tensor = self.nargs[desc_name].base
+        if len(base.shape) != len(block_size_names):
+            if knobs.autotuning.adjust_block_size_print:
+                print(f"[AABS] Warning: len(base.shape)={len(base.shape)} != {len(block_size_names)}=len(block_size_names)")
+            return
+        # 检查 TMA Descriptor 中 tensor 的形状，根据形状调整 BLOCK
+        for tensor_size, block_size_name in zip(base.shape, block_size_names):
+            block_size = current[block_size_name]
+            if block_size > tensor_size:
+                block_size = next_power_of_2(tensor_size)
+                if knobs.autotuning.adjust_block_size_print:
+                    print(f'[AABS] TMA: adjust {block_size_name} {current[block_size_name]} => {block_size} because {block_size_name} > {tensor_size}')
+                current[block_size_name] = block_size
+                config.kwargs[block_size_name] = block_size
 
 
     def adjust_block_size_dot_m_dim(self, current, config, block_dim_map, limit_bytes):
@@ -211,10 +194,8 @@ class Autotuner(KernelInterface):
                 if isinstance(narg, TensorDescriptor) and isinstance(narg.base, torch.Tensor):
                     elem_type_size = narg.base.element_size()
                     break
-
             if elem_type_size is None:
                 continue
-
             limit_elems = int(limit_bytes / elem_type_size)
             if block_size < limit_elems:
                 new_block = limit_elems
@@ -227,54 +208,35 @@ class Autotuner(KernelInterface):
     def adjust_block_size_dot_k_dim(self, current, config, block_dim_map, limit):
         # block_dim_map: {BLOCK_K -> {param_name1, param_name2, ...}}
         for block_size_name in block_dim_map.keys():
-            if block_size_name in current:
-                block_size = current[block_size_name]
-                if not isinstance(block_size, int):
-                    continue
-                if block_size < limit:
-                    new_block = limit
-                    if knobs.autotuning.adjust_block_size_print:
-                        print(f'[AABS] tl.dot: Adjust {block_size_name} {current[block_size_name]} => {new_block} because {block_size_name} < {limit}=limit_k')
-                    current[block_size_name] = new_block
-                    config.kwargs[block_size_name] = new_block
+            if block_size_name not in current:
+                continue
+            block_size = current[block_size_name]
+            if not isinstance(block_size, int):
+                continue
+            if block_size < limit:
+                new_block = limit
+                if knobs.autotuning.adjust_block_size_print:
+                    print(f'[AABS] tl.dot: Adjust {block_size_name} {current[block_size_name]} => {new_block} because {block_size_name} < {limit}=limit_k')
+                current[block_size_name] = new_block
+                config.kwargs[block_size_name] = new_block
 
 
     def _auto_adjust_block_sizes(self, current, config):
-        """
-        自动根据依赖分析结果调整 block size。
+        load_relationships, tma_relationships, block_m_map, block_k_map = analyze_kernel_dependencies(self.fn)
 
-        不再需要手动写死 ("M", "BLOCK_M"), ("N", "BLOCK_N"), ("K", "BLOCK_K") 等配对，
-        而是从 AST 分析结果中自动获取这些配对关系。
-
-        例如，mm.py 中分析出：
-            - M 依赖于 BLOCK_M (因为 ram = rm % M, 而 rm 依赖于 tl.arange(0, BLOCK_M))
-            - N 依赖于 BLOCK_N
-            - K 依赖于 BLOCK_K
-
-        则自动调用:
-            self.adjust_block_size(current, config, "M", "BLOCK_M")
-            self.adjust_block_size(current, config, "N", "BLOCK_N")
-            self.adjust_block_size(current, config, "K", "BLOCK_K")
-        """
-        self.adjusted_block_names = set()
-
-        tl_load_relationships, tma_device_relationships, tma_host_relationships, block_m_map, block_k_map = analyze_kernel_dependencies(self.fn)
-
-        if tl_load_relationships:
-            for param, constexpr in tl_load_relationships.items():
+        if load_relationships:
+            if knobs.autotuning.adjust_block_size_print:
+                print("[AABS] 1. adjust bs in tl_load or tma_device")
+            for param, constexpr in load_relationships.items():
                 self.adjust_block_size_tl_load(current, config, param, constexpr)
 
-        if tma_device_relationships:
-            #for constexpr, params in tma_device_relationships.items():
-            #    self.adjust_block_size_tma_device(current, config, constexpr, params)
-            self.adjust_block_size_dot_m_dim(current, config, block_m_map, 4)
-            self.adjust_block_size_dot_k_dim(current, config, block_k_map, 16)
-
-        if tma_host_relationships:
-            for param, block_names_set in tma_host_relationships.items():
+        if tma_relationships:
+            if knobs.autotuning.adjust_block_size_print:
+                print("[AABS] 2. adjust bs in tma")
+            for param, block_names_set in tma_relationships.items():
                 for block_names in list(block_names_set):
                     block_names = list(block_names)
-                    self.adjust_block_size_tma_host(current, config, param, block_names, set(block_k_map.keys()))
+                    self.adjust_block_size_tma(current, config, param, block_names, set(block_k_map.keys()))
             self.adjust_block_size_dot_m_dim(current, config, block_m_map, 4)
             self.adjust_block_size_dot_k_dim(current, config, block_k_map, 16)
 

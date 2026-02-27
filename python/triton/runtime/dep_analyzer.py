@@ -298,44 +298,8 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
         return var_deps
 
-    def analyze_tma_device(self) -> Dict[str, List[str]]:
-        tma_relationships = {}
 
-        for arg_base in self.tma_args.keys():
-            base_name = None
-            blck_shape_name = None
-
-            # 收集 base 中使用的变量
-            base_used_vars = VariableCollector.collect(arg_base)
-
-            # 分析每个变量的依赖
-            for base_used_var_name in base_used_vars:
-                input_deps, _ = self.get_dependencies(base_used_var_name)
-                if len(input_deps) == 1:
-                    base_name = list(input_deps)[0]
-
-            # 找到最后一维 stride 对应的 block shape
-            last_stride = self.tma_args[arg_base]['strides'][-1]
-            last_blck_shape = self.tma_args[arg_base]['block_shape'][-1]
-
-            if isinstance(last_stride, ast.Constant) and last_stride.value == 1:
-                # 收集最后一维 block shape 中使用的变量
-                blck_shape_used_vars = VariableCollector.collect(last_blck_shape)
-
-                # 分析每个变量的依赖
-                for blck_shape_used_var_name in blck_shape_used_vars:
-                    _, constexpr_deps = self.get_dependencies(blck_shape_used_var_name)
-                    if len(constexpr_deps) == 1:
-                        blck_shape_name = list(constexpr_deps)[0]
-
-            if blck_shape_name not in tma_relationships:
-                tma_relationships[blck_shape_name] = [base_name]
-            else:
-                tma_relationships[blck_shape_name].append(base_name)
-
-        return tma_relationships
-
-    def analyze_tma_host_with_trans_check(self):
+    def analyze_tma_with_trans_check(self):
         """
         分析TMA描述符load操作及其后续是否有trans操作
         """
@@ -355,9 +319,6 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             target_var = tma_info['var_name']
             tma_desc_name = tma_info['tma_desc_name']
             addr_exprs = tma_info['addr_exprs']
-
-            #if target_var not in self.input_params:
-            #    continue  # TODO: del
 
             # 分析TMA load地址表达式中的block names
             block_names = []
@@ -381,7 +342,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
         return tma_desc_relationships
 
-    def analyze_dot_k_dim(self) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+    def analyze_dot_dim(self) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
         """
         分析 tl.dot(a, b) 调用中 M / K 维度对应的 BLOCK constexpr 变量。
 
@@ -513,7 +474,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
         return block_m_map, block_k_map
 
-    def analyze(self) -> Dict[str, Set[str]]:
+    def analyze_load(self) -> Dict[str, Set[str]]:
         """
         分析所有 tl.load 或 TMA相关的地址表达式，返回参数-constexpr 依赖关系
 
@@ -556,35 +517,30 @@ def analyze_kernel_dependencies(jit_fn) -> Tuple:
         # 创建分析器并分析
         analyzer = KernelDependencyAnalyzer()
         analyzer.visit(fn_ast)
-        tl_load_relationships = analyzer.analyze()
-        tma_device_relationships = analyzer.analyze_tma_device()
-        tma_host_relationships = analyzer.analyze_tma_host_with_trans_check()
-        block_m_map, block_k_map = analyzer.analyze_dot_k_dim()
+        load_relationships = analyzer.analyze_load()
+        tma_relationships = analyzer.analyze_tma_with_trans_check()
+        block_m_map, block_k_map = analyzer.analyze_dot_dim()
 
         # 缓存结果
-        _analysis_cache[fn_id] = (tl_load_relationships, tma_device_relationships, tma_host_relationships, block_m_map, block_k_map)
+        _analysis_cache[fn_id] = (load_relationships, tma_relationships, block_m_map, block_k_map)
 
         # 可选：打印分析结果
         import os
         if os.environ.get('PRINT_FLAGTREE_DEPENDENCY_ANALYZER', '0') == '1':
-            if tl_load_relationships:
+            if load_relationships:
                 print(f"\n=== Kernel 依赖分析: {getattr(jit_fn, '__name__', 'unknown')} ===")
-                for param, constexprs in tl_load_relationships.items():
+                for param, constexprs in load_relationships.items():
                     print(f"  输入参数 '{param}' 与常量 {constexprs} 相关")
-            if tma_device_relationships:
-                print(f"\n=== TMA 块形状依赖分析: {getattr(jit_fn, '__name__', 'unknown')} ===")
-                for blck_shape, bases in tma_device_relationships.items():
-                    print(f"  最低维度块形状 '{blck_shape}' 与基 {bases} 相关")
-            if tma_host_relationships:
+            if tma_relationships:
                 print(f"\n=== TMA 输入描述符块形状依赖分析: {getattr(jit_fn, '__name__', 'unknown')} ===")
-                for tma_desc, block_names in tma_host_relationships.items():
+                for tma_desc, block_names in tma_relationships.items():
                     print(f"  TMA 输入描述符 '{tma_desc}' 与块形状 {block_names} 相关")
             if block_m_map or block_k_map:
                 print(f"\n=== tl.dot 维度分析: {getattr(jit_fn, '__name__', 'unknown')} ===")
                 print(f"  M 维 BLOCK 映射: {block_m_map}")
                 print(f"  K 维 BLOCK 映射: {block_k_map}\n")
 
-        return (tl_load_relationships, tma_device_relationships, tma_host_relationships, block_m_map, block_k_map)
+        return (load_relationships, tma_relationships, block_m_map, block_k_map)
 
     except Exception as e:
         # 分析失败时返回空字典
