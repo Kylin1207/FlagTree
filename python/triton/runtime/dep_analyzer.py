@@ -334,10 +334,9 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
         return tma_desc_relationships
 
-    #def analyze_dot_k_dim(self) -> List[Dict]:
-    def analyze_dot_k_dim(self) -> Set[str]:
+    def analyze_dot_k_dim(self) -> Tuple[Set[str], Set[str]]:
         """
-        分析 tl.dot(a, b) 调用中 K 维度对应的 BLOCK constexpr 变量。
+        分析 tl.dot(a, b) 调用中 M / K 维度对应的 BLOCK constexpr 变量。
 
         策略：
         - 每个 TMA load 赋值 (var = desc.load([addr0, addr1, ...])) 都能推断出
@@ -348,16 +347,9 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         - 两者应当一致，一致时返回 k_block 字段。
 
         Returns:
-            list of dict，每个元素描述一次 tl.dot 调用的 K 维度分析结果：
-            {
-              'a_desc': str,        # a 来自的 TMA 描述符名
-              'b_desc': str,        # b 来自的 TMA 描述符名
-              'a_block_shape': tuple, # a 的推断 block shape (e.g. ('BLOCK_M', 'BLOCK_K'))
-              'b_block_shape': tuple, # b 的推断 block shape (e.g. ('BLOCK_K', 'BLOCK_N'))
-              'k_from_a': str,      # 从 a 最后一维推断出的 K block 名
-              'k_from_b': str,      # 从 b 第一维推断出的 K block 名
-              'k_block': str|None,  # k_from_a == k_from_b 时的 K block 名，否则 None
-            }
+            (block_m_sets, block_k_sets):
+              block_m_sets: 所有 tl.dot 调用中推断出的 M 维 BLOCK 名的集合
+              block_k_sets: 所有 tl.dot 调用中推断出的 K 维 BLOCK 名的集合（通过一致性校验）
         """
         # Step 1: 为每个 TMA load 目标变量推断原始 block shape（不含 trans 翻转效果）
         raw_var_block_shape: Dict[str, tuple] = {}
@@ -397,8 +389,13 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                         break
 
         # Step 3: 对每个 tl.dot 调用分析 K 维度
+        # 判断依据：tl.dot(a, b) 中 a 的形状为 (M, K)，b 的形状为 (K, N)。
+        # K 维度由操作数顺序决定：a 的最后一维必然是 K 维，无需拿 b 的首维做等值比对
+        # （等值比对在 M=N 等特殊情况下会误判）。
         k_dim_results = []
-        block_k_sets = set()
+        block_m_sets: Set[str] = set()
+        block_k_sets: Set[str] = set()
+        has_inconsistent = False
         for dot_node in self.dot_calls:
             args = dot_node.args
             if len(args) < 2:
@@ -411,16 +408,20 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             a_block_names = None
             b_block_names = None
 
-            # 第一个操作数 a：K = 最后一维
+            # 第一个操作数 a：形状为 (M, K)，M = 第一维，K = 最后一维
             for a_var in VariableCollector.collect(args[0]):
                 if a_var in var_block_shape:
                     a_desc_name, a_block_list = var_block_shape[a_var]
                     a_block_names = tuple(a_block_list)
                     if a_block_list:
+                        # M 维 block 名：a 的第一维
+                        m_from_a = a_block_list[0]
+                        block_m_sets.add(m_from_a)
+                        # K 维 block 名：a 的最后一维
                         k_from_a = a_block_list[-1]
                     break
 
-            # 第二个操作数 b：K = 第一维
+            # 第二个操作数 b：形状为 (K, N)，K = 第一维（仅作辅助信息，不参与主判断）
             for b_var in VariableCollector.collect(args[1]):
                 if b_var in var_block_shape:
                     b_desc_name, b_block_list = var_block_shape[b_var]
@@ -429,6 +430,16 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                         k_from_b = b_block_list[0]
                     break
 
+            # K 维度由操作数顺序直接确定：a 的最后一维就是 K，
+            # 但仍然需要和 b 的第一维做一致性校验；若二者都可解析且不相等，
+            # 说明当前 kernel 的访问模式与矩阵乘约定不一致，此时代码不返回分析结果。
+            k_block = k_from_a if k_from_a is not None else k_from_b
+
+            if (k_from_a is not None
+                    and k_from_b is not None
+                    and k_from_a != k_from_b):
+                has_inconsistent = True
+
             k_dim_results.append({
                 'a_desc': a_desc_name,
                 'b_desc': b_desc_name,
@@ -436,13 +447,17 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 'b_block_shape': b_block_names,
                 'k_from_a': k_from_a,
                 'k_from_b': k_from_b,
-                'k_block': k_from_a if k_from_a == k_from_b else None,
+                'k_block': k_block,
             })
-            if k_from_a == k_from_b:
-                block_k_sets.add(k_from_a)
+            if k_block is not None:
+                block_k_sets.add(k_block)
 
-        #return k_dim_results
-        return block_k_sets
+        # 若任意一次 tl.dot 的 K 维推断结果在 a / b 两侧不一致，
+        # 则认为整体分析不可靠，返回空集合让上层逻辑放弃自动调整。
+        if has_inconsistent:
+            return set(), set()
+
+        return block_m_sets, block_k_sets
 
     def analyze(self) -> Dict[str, Set[str]]:
         """
@@ -490,10 +505,10 @@ def analyze_kernel_dependencies(jit_fn) -> Tuple:
         tl_load_relationships = analyzer.analyze()
         tma_device_relationships = analyzer.analyze_tma_device()
         tma_host_relationships = analyzer.analyze_tma_host_with_trans_check()
-        block_k_sets = analyzer.analyze_dot_k_dim()
+        block_m_sets, block_k_sets = analyzer.analyze_dot_k_dim()
 
         # 缓存结果
-        _analysis_cache[fn_id] = (tl_load_relationships, tma_device_relationships, tma_host_relationships, block_k_sets)
+        _analysis_cache[fn_id] = (tl_load_relationships, tma_device_relationships, tma_host_relationships, block_m_sets, block_k_sets)
 
         # 可选：打印分析结果
         import os
@@ -510,16 +525,12 @@ def analyze_kernel_dependencies(jit_fn) -> Tuple:
                 print(f"\n=== TMA 输入描述符块形状依赖分析: {getattr(jit_fn, '__name__', 'unknown')} ===")
                 for tma_desc, block_names in tma_host_relationships.items():
                     print(f"  TMA 输入描述符 '{tma_desc}' 与块形状 {block_names} 相关")
-            #if dot_k_dim_results:
-            #    print(f"\n=== tl.dot K 维度分析: {getattr(jit_fn, '__name__', 'unknown')} ===")
-            #    for i, res in enumerate(dot_k_dim_results):
-            #        k_info = res['k_block'] if res['k_block'] else f"不一致(a侧={res['k_from_a']}, b侧={res['k_from_b']})"
-            #        print(f"  dot[{i}]: ({res['a_desc']}{res['a_block_shape']}) * ({res['b_desc']}{res['b_block_shape']})  =>  K 维对应 BLOCK: {k_info}")
-            if block_k_sets:
-                print(f"\n=== tl.dot K 维度分析: {getattr(jit_fn, '__name__', 'unknown')} ===")
-                print(f"{block_k_sets}\n")
+            if block_m_sets or block_k_sets:
+                print(f"\n=== tl.dot 维度分析: {getattr(jit_fn, '__name__', 'unknown')} ===")
+                print(f"  M 维 BLOCK 集合: {block_m_sets}")
+                print(f"  K 维 BLOCK 集合: {block_k_sets}\n")
 
-        return (tl_load_relationships, tma_device_relationships, tma_host_relationships, block_k_sets)
+        return (tl_load_relationships, tma_device_relationships, tma_host_relationships, block_m_sets, block_k_sets)
 
     except Exception as e:
         # 分析失败时返回空字典
