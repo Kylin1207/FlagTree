@@ -143,6 +143,7 @@ class Autotuner(KernelInterface):
                 current[block_size_name] = block_size
                 config.kwargs[block_size_name] = block_size
 
+    '''
     def adjust_block_size_tma_device(self, current, config, block_size_name, tensor_names: List[str]):
         block_size = None
         for tensor_name in tensor_names:
@@ -159,6 +160,7 @@ class Autotuner(KernelInterface):
                     print(f'[AABS] TMA device: Adjust {block_size_name} {current[block_size_name]} => {block_size} because {block_size_name} < 16')
                 current[block_size_name] = block_size
                 config.kwargs[block_size_name] = block_size
+    '''
 
     def adjust_block_size_tma_host(self, current, config, desc_name, block_size_names, block_k_sets: Set[str]):
         from triton.tools.tensor_descriptor import TensorDescriptor
@@ -263,8 +265,8 @@ class Autotuner(KernelInterface):
                 self.adjust_block_size_tl_load(current, config, param, constexpr)
 
         if tma_device_relationships:
-            for constexpr, params in tma_device_relationships.items():
-                self.adjust_block_size_tma_device(current, config, constexpr, params)
+            #for constexpr, params in tma_device_relationships.items():
+            #    self.adjust_block_size_tma_device(current, config, constexpr, params)
             self.adjust_block_size_dot_m_dim(current, config, block_m_map, 4)
             self.adjust_block_size_dot_k_dim(current, config, block_k_map, 16)
 
