@@ -934,6 +934,7 @@ class CodeGenerator(ast.NodeVisitor):
         else:
             raise RuntimeError('Only `range` and `static_range` iterators are currently supported')
         # hint manager
+        bind_sub_block = None
         new_bind_sub_block = hint_trigger("check_override_bind_sub_block", self, node, bind_sub_block)
         if new_bind_sub_block is not None:
             bind_sub_block = new_bind_sub_block
@@ -1002,6 +1003,7 @@ class CodeGenerator(ast.NodeVisitor):
             if loop_unroll_factor is not None:
                 for_op.set_attr("tt.loop_unroll_factor", self.builder.get_int32_attr(loop_unroll_factor))
             # flagtree backend specialization
+            for_op_ext_attrs = (False, False, False, False)
             from triton.runtime.driver import spec
             spec("for_op_set_ext_attrs", for_op, self.builder, for_op_ext_attrs)
             # hint manager
