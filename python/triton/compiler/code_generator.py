@@ -196,13 +196,7 @@ class CodeGenerator(ast.NodeVisitor):
                  codegen_fns, module_map, module=None, is_kernel=False, function_types: Optional[Dict] = None,
                  noinline=False, file_name: Optional[str] = None, begin_line=0):
         self.context = context
-        # flagtree backend specialization
-        from triton.runtime.driver import spec
-        opt_compile_mode = spec("ext_CodeGenerator_builder_with_compile_mode", options)
-        if opt_compile_mode:
-            self.builder = ir.builder(context, compile_mode=opt_compile_mode)
-        else:
-            self.builder = ir.builder(context)
+        self.builder = ir.builder(context)
         self.file_name = file_name
         # node.lineno starts from 1, so we need to subtract 1
         self.begin_line = begin_line - 1
@@ -920,15 +914,7 @@ class CodeGenerator(ast.NodeVisitor):
             return
         num_stages = None
         loop_unroll_factor = None
-        # flagtree backend specialization: add more ForOp attributes
-        for_op_ext_attrs = (False, False, False, False)
-
-        # flagtree backend specialization
-        from triton.runtime.driver import spec
-        bind_sub_block = None
-        ext_it_class_support = spec("visit_For_ext_support")
-        ext_it_class_support = [] if ext_it_class_support is None else ext_it_class_support
-        if IteratorClass in [language.range] + ext_it_class_support:
+        if IteratorClass is language.range:
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -938,12 +924,6 @@ class CodeGenerator(ast.NodeVisitor):
             step = iterator.step
             num_stages = iterator.num_stages
             loop_unroll_factor = iterator.loop_unroll_factor
-            # flagtree backend specialization
-            for_op_ext_attrs = spec("for_op_ext_attrs", iterator)
-            # flagtree backend specialization
-            new_bind_sub_block = spec("set_bind_sub_block_when_parallel", IteratorClass, iterator, bind_sub_block)
-            if new_bind_sub_block is not None:
-                bind_sub_block = new_bind_sub_block
         elif IteratorClass is range:
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1110,11 +1090,6 @@ class CodeGenerator(ast.NodeVisitor):
                 generator.visit(fn.parse())
             except Exception as e:
                 # Wrap the error in the callee with the location of the call.
-
-                # flagtree backend specialization
-                from triton.runtime.driver import spec
-                if spec('need_repr_in_CodeGenerator_CompilationError'):
-                    raise CompilationError(self.jit_fn.src, self.cur_node, repr(e)) from e
                 raise CompilationError(self.jit_fn.src, self.cur_node, None) from e
 
             callee_ret_type = generator.ret_type
@@ -1159,11 +1134,6 @@ class CodeGenerator(ast.NodeVisitor):
                 # itself).  But when calling a function, we raise as `from e` to
                 # preserve the traceback of the original error, which may e.g.
                 # be in core.py.
-
-                #flagtree backend specialization
-                from triton.runtime.driver import spec
-                if spec('need_repr_in_CodeGenerator_CompilationError'):
-                    raise CompilationError(self.jit_fn.src, node, repr(e)) from e
                 raise CompilationError(self.jit_fn.src, node, None) from e
 
         if fn in self.builtin_namespace.values():

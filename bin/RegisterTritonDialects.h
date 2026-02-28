@@ -47,7 +47,9 @@ namespace test {
 void registerTestAliasPass();
 void registerTestAlignmentPass();
 void registerTestAllocationPass();
+#ifdef __NVIDIA__
 void registerTestMembarPass();
+#endif
 } // namespace test
 } // namespace mlir
 

@@ -566,16 +566,7 @@ class JITFunction(KernelInterface[T]):
         # parse options
         from ..compiler import make_backend
         device = driver.active.get_current_device()
-
-        # flagtree backend specialization
         stream = driver.active.get_current_stream(device)
-        from triton.runtime.driver import spec
-        if spec("enable_stream_in_kwargs", kwargs):
-            if "stream" not in kwargs.keys():
-                stream = driver.active.get_current_stream(device)
-            else:
-                stream = None
-
         target = driver.active.get_current_target()
         backend = make_backend(target)
 
@@ -585,10 +576,6 @@ class JITFunction(KernelInterface[T]):
 
         if self.binder is None:
             self.create_binder(backend)
-
-        # flagtree backend specialization
-        if self.extra_option and spec("enable_extra_option"):
-            kwargs.update(self.extra_option)
 
         bound_args, sig_and_spec, constexpr_vals, non_constexpr_vals, excess_kwargs = self.binder(*args, **kwargs)
 
@@ -603,17 +590,10 @@ class JITFunction(KernelInterface[T]):
             # deprecated arguments
             assert "device_type" not in kwargs, "device_type option is deprecated; current target will be used"
             assert "device" not in kwargs, "device option is deprecated; current device will be used"
-
-            # flagtree backend specialization
-            from triton.runtime.driver import spec
-            if not spec("enable_stream_in_kwargs", kwargs):
-                assert "stream" not in kwargs, "stream option is deprecated; current stream will be used"
-
+            assert "stream" not in kwargs, "stream option is deprecated; current stream will be used"
             for k in excess_kwargs:
                 if k not in options.__dict__:
                     raise KeyError("Keyword argument %s was specified but unrecognised" % k)
-
-            spec("ignore_params_in_JITFunction_run", kwargs, excess_kwargs)
 
             bound_vals = tuple(bound_args.values())
 
@@ -668,27 +648,14 @@ class JITFunction(KernelInterface[T]):
             grid_1 = grid[1] if grid_size > 1 else 1
             grid_2 = grid[2] if grid_size > 2 else 1
 
-            # flagtree backend specialization
-            from triton.runtime.driver import spec
-            spec("check_grid_size", grid_0, grid_1, grid_2)
-            if spec("enable_stream_in_kwargs", kwargs):
-                if ("stream" in kwargs.keys()):
-                    stream = kwargs["stream"]
-
             # launch kernel
             launch_metadata = kernel.launch_metadata(grid, stream, *non_constexpr_vals)
-
-            # flagtree backend specialization
-            from triton.runtime.driver import spec
-            spec("explicit_load_kernel_library", kernel)
-
             kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
                        self.CompiledKernel.launch_enter_hook, self.CompiledKernel.launch_exit_hook, *non_constexpr_vals)
         return kernel
 
-    # flagtree backend specialization add new params: "extra_option"
     def __init__(self, fn, version=None, do_not_specialize=None, do_not_specialize_on_alignment=None, debug=None,
-                 noinline=None, repr=None, launch_metadata=None, extra_option=None):
+                 noinline=None, repr=None, launch_metadata=None):
         do_not_specialize = do_not_specialize if do_not_specialize else []
         do_not_specialize_on_alignment = do_not_specialize_on_alignment if do_not_specialize_on_alignment else []
 
@@ -701,8 +668,6 @@ class JITFunction(KernelInterface[T]):
         self.starting_line_number = inspect.getsourcelines(fn)[1]
         self.repr = lambda _: fn.__name__ if repr is None else repr(_)
         self.launch_metadata = launch_metadata
-        # flagtree backend specialization
-        self.extra_option = extra_option
 
         self.binder = None
 
@@ -777,12 +742,7 @@ class JITFunction(KernelInterface[T]):
             for key, value in deserialized_obj['constants'].items()
         }
         signature = dict(deserialized_obj['signature'].items())
-
-        # flagtree backend specialization
-        from triton.runtime.driver import spec
-        src = ASTSource(
-            self, signature, constants,
-            spec('get_JITFunction_spec_attr', deserialized_obj) or AttrsDescriptor.from_dict(deserialized_obj['attrs']))
+        src = ASTSource(self, signature, constants, AttrsDescriptor.from_dict(deserialized_obj['attrs']))
         options = {
             key: tuple(value) if isinstance(value, list) else value
             for key, value in deserialized_obj['options'].items()
@@ -836,7 +796,6 @@ def jit(fn: T) -> JITFunction[T]:
     ...
 
 
-# flagtree backend specialization add new params: "options"
 @overload
 def jit(
     *,
@@ -847,12 +806,10 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
-    options: Optional[dict] = None,
 ) -> Callable[[T], JITFunction[T]]:
     ...
 
 
-# flagtree backend specialization add new params: "options"
 def jit(
     fn: Optional[T] = None,
     *,
@@ -863,7 +820,6 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
-    options: Optional[dict] = None,
 ) -> Union[JITFunction[T], Callable[[T], JITFunction[T]]]:
     """
     Decorator for JIT-compiling a function using the Triton compiler.
@@ -900,7 +856,6 @@ def jit(
                 noinline=noinline,
                 repr=repr,
                 launch_metadata=launch_metadata,
-                extra_option=options,
             )
 
     if fn is not None:
