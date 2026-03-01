@@ -162,9 +162,9 @@ class Autotuner(KernelInterface):
             return
         if len(desc_base.shape) != len(bs_names):
             if knobs.autotuning.print:
-                print(f"[AABS] Warning: len(desc_base.shape)={len(desc_base.shape)} != {len(bs_names)}=len(bs_names)")
+                print(f"[AABS] Warning: len(desc_base.shape)={len(desc_base.shape)} != {len(bs_names)}=len(bs_names), bs_names={bs_names}")
             return
-        for shape_size, bs_name in zip[tuple](desc_base.shape, bs_names):
+        for shape_size, bs_name in zip(desc_base.shape, bs_names):
             bs = current[bs_name]
             if not isinstance(shape_size, int) or not isinstance(bs, int):
                 continue

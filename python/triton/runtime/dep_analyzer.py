@@ -234,24 +234,6 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     return node.func.value.id in ('tl', 'triton')
         return False
 
-    def _is_tl_program_id(self, node) -> bool:
-        if not isinstance(node, ast.Call):
-            return False
-        func = node.func
-        # program_id
-        if isinstance(func, ast.Name):
-            return func.id == 'program_id'
-        # tl.program_id, language.program_id, triton.program_id
-        if isinstance(func, ast.Attribute) and func.attr == 'program_id':
-            value = func.value
-            if isinstance(value, ast.Name):
-                return value.id in ('tl', 'triton', 'language')
-            # triton.language.program_id
-            if isinstance(value, ast.Attribute):
-                return (value.attr == 'language' and
-                        isinstance(value.value, ast.Name) and
-                        value.value.id == 'triton')
-        return False
 
     def get_dependencies(self, var_name: str, visited: Optional[Set[str]] = None) -> tuple[Set[str], Set[str]]:
         if visited is None:
@@ -274,10 +256,10 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             return input_deps, constexpr_deps
 
         # Recursively analyze the dependencies of the variable definition
-        if var_name in self.var_definitions:
+        if var_name in self.var_definitions and not var_name.startswith('pid'):
             definition_node = self.var_definitions[var_name]
             # Skip runtime value program_id
-            if not self._is_tl_program_id(definition_node):
+            if True:
                 used_vars = VariableCollector.collect(definition_node)
                 for used_var in used_vars:
                     sub_inputs, sub_constexprs = self.get_dependencies(used_var, visited.copy())
@@ -300,10 +282,10 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             return var_deps
 
         # Recursively analyze the dependencies of the variable definition
-        if var_name in self.var_definitions:
+        if var_name in self.var_definitions and not var_name.startswith('pid'):
             definition_node = self.var_definitions[var_name]
             # Skip runtime value program_id
-            if not self._is_tl_program_id(definition_node):
+            if True:
                 used_vars = VariableCollector.collect(definition_node)
                 for used_var in used_vars:
                     var_deps.update(self._get_dependencies_vars(used_var, visited.copy()))
@@ -338,7 +320,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                         bs_names.append(list(constexpr_deps)[0])
                         break
 
-            if target_var in transpose_used_vars:
+            if target_var in transpose_used_vars and len(bs_names) >= 2:
                 bs_names[-1], bs_names[-2] = bs_names[-2], bs_names[-1]
 
             # 添加每个 TMA Descriptor 对应的 block names（可能有多对）
@@ -543,7 +525,7 @@ def analyze_kernel_dependencies(jit_fn) -> Tuple:
 
     except Exception as e:
         print(f"Warning: dep_analyzer failed: {e}")
-        return {}
+        return (None, None, None, None)
 
 
 def clear_analysis_cache():
