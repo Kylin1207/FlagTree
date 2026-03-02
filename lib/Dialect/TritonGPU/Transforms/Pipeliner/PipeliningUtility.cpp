@@ -175,6 +175,10 @@ Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
     return op;
   if (isa<ttg::AsyncCommitGroupOp, ttg::AsyncWaitOp>(op))
     return op;
+  // begin flagtree tle
+  if (op->getName().getStringRef() == "tle.distributed_barrier")
+    return op;
+  // end flagtree tle
   if (op->hasTrait<OpTrait::LocalLoadTrait>())
     return op;
   if (isa<ttg::LocalStoreOp>(op))

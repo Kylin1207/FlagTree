@@ -6,6 +6,7 @@ from triton.experimental.tle.distributed import (
     _infer_submesh_barrier_group,
     _mesh_to_cluster_dims,
     _normalize_remote_shard_id,
+    _resolve_launch_axis,
 )
 import triton.language.core as tlcore
 
@@ -106,6 +107,7 @@ class TestRemoteShardId:
     def test_m3_entrypoints_are_builtins(self):
         assert tlcore.is_builtin(tle.remote)
         assert tlcore.is_builtin(tle.distributed_barrier)
+        assert tlcore.is_builtin(tle.shard_id)
 
     def test_remote_buffered_tensor_attach_metadata(self):
         class buffered_tensor:
@@ -118,9 +120,13 @@ class TestRemoteShardId:
         remote_buf = tle.remote(buf, 1, _semantic=_FakeSemantic())
 
         assert remote_buf is not buf
-        assert getattr(remote_buf, "_tle_remote_shard_id") == 1
-        assert getattr(remote_buf, "_tle_remote_scope") is None
+        shard_id = getattr(remote_buf.type, "_tle_remote_shard_id", getattr(remote_buf, "_tle_remote_shard_id", None))
+        scope = getattr(remote_buf.type, "_tle_remote_scope", getattr(remote_buf, "_tle_remote_scope", None))
+        assert shard_id == 1
+        assert scope is None
         assert not hasattr(buf, "_tle_remote_shard_id")
+        assert not hasattr(buf.type, "_tle_remote_shard_id")
+        assert not hasattr(buf.type, "_tle_remote_scope")
 
     def test_remote_buffered_tensor_rejects_duplicate_annotation(self):
         class buffered_tensor:
@@ -169,6 +175,17 @@ class TestClusterDims:
         sub = mesh[0, :]
         assert sub.shape == (2,)
         assert _mesh_to_cluster_dims(sub) == (2, 2, 1)
+
+    def test_resolve_launch_axis(self):
+        mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
+        assert _resolve_launch_axis(mesh, "cluster_x") == 0
+        assert _resolve_launch_axis(mesh, "cluster_y") == 1
+        assert _resolve_launch_axis(mesh, 0) == 0
+        assert _resolve_launch_axis(mesh, -1) == 1
+        with pytest.raises(ValueError):
+            _resolve_launch_axis(mesh, "missing_axis")
+        with pytest.raises(IndexError):
+            _resolve_launch_axis(mesh, 2)
 
 
 class _FakeOptions:

@@ -63,8 +63,13 @@ struct DistributedBarrierOpConversion
                                     ConversionPatternRewriter &rewriter) const {
     auto *ctx = rewriter.getContext();
     auto unit = UnitAttr::get(ctx);
+    // Cluster arrive/wait does not provide CTA-wide synchronization semantics
+    // for local shared-memory hazards. Add CTA barriers around it so
+    // distributed_barrier behaves as a full barrier for each participating CTA.
+    rewriter.create<mlir::gpu::BarrierOp>(op.getLoc());
     rewriter.create<NVVM::ClusterArriveOp>(op.getLoc(), unit);
     rewriter.create<NVVM::ClusterWaitOp>(op.getLoc(), unit);
+    rewriter.create<mlir::gpu::BarrierOp>(op.getLoc());
     rewriter.eraseOp(op);
     return success();
   }

@@ -28,7 +28,8 @@ def Tle_LocalPointersOp : Tle_Op<"local_pointers",
   let hasVerifier = 1;
 }
 
-def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier", []> {
+def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
+                                      [MemoryEffects<[MemRead, MemWrite]>]> {
   let arguments = (ins
     OptionalAttr<StrAttr>:$group_kind,
     OptionalAttr<I32Attr>:$group_rank,

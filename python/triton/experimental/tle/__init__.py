@@ -11,6 +11,7 @@ from .distributed import (
     make_sharded_tensor,
     remote,
     reshard,
+    shard_id,
     sharding,
 )
 
@@ -32,6 +33,7 @@ __all__ = [
     "make_sharded_tensor",
     "reshard",
     "remote",
+    "shard_id",
     "distributed_barrier",
     "distributed_dot",
     "language",

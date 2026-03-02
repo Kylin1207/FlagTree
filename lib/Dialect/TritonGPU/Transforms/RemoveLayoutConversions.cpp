@@ -33,6 +33,35 @@ namespace mlir::triton::gpu {
 
 namespace {
 
+// begin flagtree tle
+static bool touchesTleDistributedPointerPath(Value value,
+                                             DenseSet<Value> &visited) {
+  if (!visited.insert(value).second)
+    return false;
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return false;
+  StringRef opName = def->getName().getStringRef();
+  if (opName == "tle.local_pointers" || opName == "tle.remote_pointers")
+    return true;
+  if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
+    auto result = dyn_cast<OpResult>(value);
+    if (!result)
+      return false;
+    unsigned idx = result.getResultNumber();
+    return touchesTleDistributedPointerPath(ifOp.thenYield().getOperand(idx),
+                                            visited) ||
+           touchesTleDistributedPointerPath(ifOp.elseYield().getOperand(idx),
+                                            visited);
+  }
+  for (Value operand : def->getOperands()) {
+    if (touchesTleDistributedPointerPath(operand, visited))
+      return true;
+  }
+  return false;
+}
+// end flagtree tle
+
 // -----------------------------------------------------------------------------
 //
 // -----------------------------------------------------------------------------
@@ -1270,6 +1299,14 @@ void LayoutRematerialization::hoistConvertDotOperand(
     ConvertLayoutOp convertOp) {
   auto targetType = convertOp.getType();
   // The pass is targeted to MMA dot operands
+
+  // begin flagtree tle
+  {
+    DenseSet<Value> visited;
+    if (touchesTleDistributedPointerPath(convertOp.getSrc(), visited))
+      return;
+  }
+  // end flagtree tle
 
   auto canBePipelined = [&](ConvertLayoutOp convertOp) {
     // FIXME: Check that the parent is a for loop

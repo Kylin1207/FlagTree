@@ -9,6 +9,7 @@ compares against torch.topk. The shapes default to common MoE gating usage:
 """
 
 import argparse
+import itertools
 import os
 import sys
 import time
@@ -19,6 +20,78 @@ import triton.experimental.tle.language.gpu as tle
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 DEBUG_TIMING = os.getenv("TOPK_DEBUG_TIMING", "0") == "1"
+
+try:
+    import tilelang
+    import tilelang.language as T
+
+    _HAVE_TILELANG = True
+except Exception:  # pragma: no cover - optional dependency
+    _HAVE_TILELANG = False
+    tilelang = None
+    T = None
+
+
+if _HAVE_TILELANG:
+
+    def _tilelang_get_configs():
+        iter_params = dict(
+            blk_m=[64, 128, 256],
+            threads=[128, 256, 512],
+        )
+        return [dict(zip(iter_params, values)) for values in itertools.product(*iter_params.values())]
+
+
+    @tilelang.autotune(configs=_tilelang_get_configs())
+    @tilelang.jit(out_idx=[1, 2])
+    def _tilelang_topk_kernel(M, N, topk, blk_m, threads=128):
+        dtype = T.float32
+
+        @T.prim_func
+        def topk_kernel(
+            logits: T.Tensor([M, N], dtype),
+            topk_gates: T.Tensor([M, topk], dtype),
+            topk_indices: T.Tensor([M, topk], T.int32),
+        ):
+            with T.Kernel(T.ceildiv(M, blk_m), threads=threads) as bx:
+                logits_frag = T.alloc_fragment([blk_m, N], dtype=dtype)
+                max_val = T.alloc_fragment([blk_m], dtype=dtype)
+                expand_max_idx = T.alloc_fragment([blk_m, N], T.int32)
+                max_idx = T.alloc_fragment([blk_m], T.int32)
+
+                T.copy(logits[bx * blk_m, 0], logits_frag)
+
+                for k in T.serial(topk):
+                    T.fill(expand_max_idx, -1)
+                    T.reduce_max(logits_frag, max_val, dim=1, clear=True)
+
+                    for i, j in T.Parallel(blk_m, N):
+                        expand_max_idx[i, j] = T.if_then_else(max_val[i] == logits_frag[i, j], j, expand_max_idx[i, j])
+
+                    T.reduce_max(expand_max_idx, max_idx, dim=1, clear=True)
+
+                    for i, j in T.Parallel(blk_m, N):
+                        logits_frag[i, j] = T.if_then_else(max_val[i] == logits_frag[i, j], -10000.0, logits_frag[i, j])
+
+                    for i in T.Parallel(blk_m):
+                        topk_gates[bx * blk_m + i, k] = max_val[i]
+                        topk_indices[bx * blk_m + i, k] = max_idx[i]
+
+        return topk_kernel
+
+
+    _TILELANG_KERNEL_CACHE = {}
+
+    def tilelang_topk_example(logits: torch.Tensor, topk: int):
+        if logits.dtype != torch.float32:
+            logits = logits.float()
+        m, n = logits.shape
+        key = (m, n, topk)
+        kernel = _TILELANG_KERNEL_CACHE.get(key)
+        if kernel is None:
+            kernel = _tilelang_topk_kernel(M=m, N=n, topk=topk, blk_m=64)
+            _TILELANG_KERNEL_CACHE[key] = kernel
+        return kernel(logits)
 
 
 @triton.jit
@@ -840,6 +913,15 @@ if "--only_unit_test" in sys.argv:
     sys.exit(0)
 
 
+_BENCH_PROVIDERS = ["triton", "triton_iterative", "triton_iter_shared_radix"]
+_BENCH_NAMES = ["Triton-TopK", "Triton-Iterative", "Triton-RadixSelect"]
+_BENCH_STYLES = [("blue", "-"), ("green", "-"), ("red", "-")]
+if _HAVE_TILELANG:
+    _BENCH_PROVIDERS.append("tilelang")
+    _BENCH_NAMES.append("TileLang")
+    _BENCH_STYLES.append(("black", "-"))
+
+
 @triton.testing.perf_report(
     triton.testing.Benchmark(
         x_names=["M", "N", "K"],
@@ -850,9 +932,9 @@ if "--only_unit_test" in sys.argv:
         ],
         x_log=True,
         line_arg="provider",
-        line_vals=["triton", "triton_iterative", "triton_iter_shared_radix"],
-        line_names=["Triton-TopK", "Triton-Iterative", "Triton-RadixSelect"],
-        styles=[("blue", "-"), ("green", "-"), ("red", "-")],
+        line_vals=_BENCH_PROVIDERS,
+        line_names=_BENCH_NAMES,
+        styles=_BENCH_STYLES,
         ylabel="ms",
         plot_name="tle-topk-performance",
         args={},
@@ -910,6 +992,28 @@ def benchmark(M, N, K, provider, dtype):
             torch.cuda.synchronize()
             dt = (time.perf_counter() - t0) * 1e3
             print(f"[timing] prewarm radix M={M} N={N} K={K}: {dt:.3f} ms", flush=True)
+        ms, min_ms, max_ms = triton.testing.do_bench(
+            run_kernel,
+            quantiles=quantiles,
+            warmup=bench_warmup,
+            rep=bench_rep,
+        )
+    elif provider == "tilelang":
+        if not _HAVE_TILELANG:
+            return float("nan"), float("nan"), float("nan")
+        if M % 64 != 0:
+            return float("nan"), float("nan"), float("nan")
+
+        def run_kernel():
+            tilelang_topk_example(x, K)
+
+        if DEBUG_TIMING:
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            run_kernel()
+            torch.cuda.synchronize()
+            dt = (time.perf_counter() - t0) * 1e3
+            print(f"[timing] prewarm tilelang M={M} N={N} K={K}: {dt:.3f} ms", flush=True)
         ms, min_ms, max_ms = triton.testing.do_bench(
             run_kernel,
             quantiles=quantiles,

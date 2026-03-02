@@ -15,6 +15,8 @@ This folder is the canonical workspace for TLE planning and execution docs.
 - Design overview: `docs/tle/design/README.md`
 - Distributed API design: `docs/tle/design/distributed_api.md`
 - Distributed sub-mesh barrier plan: `docs/tle/design/distributed_barrier_submesh.md`
+- Distributed remote GEMM design: `docs/tle/design/distributed_remote_gemm.md`
+- Distributed remote GEMM optimization plan: `docs/tle/design/distributed_remote_gemm_optimization_plan.md`
 - Design reviews index: `docs/tle/design/reviews/README.md`
 - Distributed API review: `docs/tle/design/reviews/distributed_api_design_review_2026-02-24.md`
 - Language GPU API design: `docs/tle/design/language_gpu_api.md`
@@ -24,6 +26,8 @@ This folder is the canonical workspace for TLE planning and execution docs.
 - Active backlog: `docs/tle/backlog/backlog.md`
 - Distributed API detailed backlog: `docs/tle/backlog/distributed_api_backlog.md`
 - Lessons learned index: `docs/tle/lessons_learned/README.md`
+- Fix summary template: `docs/tle/templates/fix_summary.md`
+- Lessons entry template: `docs/tle/templates/lessons_entry.md`
 
 ## Document Lifecycle
 
@@ -31,7 +35,9 @@ This folder is the canonical workspace for TLE planning and execution docs.
 2. Design proposal: add/update docs under `docs/tle/design/`.
 3. Execution plan: add tasks to `docs/tle/backlog/backlog.md`.
 4. Implementation workflow: follow `docs/tle/workflow/development_workflow.md`.
-5. Retrospective: record outcomes in `docs/tle/lessons_learned/`.
+5. Post-fix summary: fill `docs/tle/templates/fix_summary.md` after every fix.
+6. Lessons entry: fill `docs/tle/templates/lessons_entry.md` for every major fix/optimization.
+7. Retrospective: record outcomes in `docs/tle/lessons_learned/`.
 
 ## Ownership Rules
 

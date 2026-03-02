@@ -152,11 +152,23 @@ void TargetInfo::barrier(Location loc, RewriterBase &rewriter,
   }
 }
 
-static Value mapa(RewriterBase &rewriter, Location loc, Value ptr, Value ctaid,
-                  Value pred) {
+static Value mapa(RewriterBase &rewriter, Location loc, Value ptr, Value ctaid) {
   auto clusterPtrTy = LLVM::LLVMPointerType::get(
       rewriter.getContext(), NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
   return rewriter.create<NVVM::MapaOp>(loc, clusterPtrTy, ptr, ctaid);
+}
+
+Value TargetInfo::mapSharedToClusterPointer(RewriterBase &rewriter, Location loc,
+                                            Value ptr, Value ctaId) const {
+  auto ptrTy = cast<LLVM::LLVMPointerType>(ptr.getType());
+  if (ptrTy.getAddressSpace() ==
+      static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedClusterMemorySpace))
+    return ptr;
+  assert(
+      ptrTy.getAddressSpace() ==
+          static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace) &&
+      "mapSharedToClusterPointer requires shared or cluster shared pointers");
+  return mapa(rewriter, loc, ptr, ctaId);
 }
 
 static std::string getConstraintForBitwidth(unsigned bitwidth) {
@@ -186,7 +198,15 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   MLIRContext *ctx = rewriter.getContext();
   auto ptrTy = cast<LLVM::LLVMPointerType>(ptr.getType());
-  assert(ptrTy.getAddressSpace() == 3 && "Invalid addr space for load_dsmem");
+  const bool isShared =
+      ptrTy.getAddressSpace() ==
+      static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace);
+  const bool isClusterShared =
+      ptrTy.getAddressSpace() ==
+      static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
+  assert((isShared || isClusterShared) &&
+         "Invalid addr space for store_dsmem");
+  const bool useCluster = ctaId.has_value() || isClusterShared;
 
   if (!isa<VectorType>(val.getType())) {
     storeDShared(rewriter, loc, ptr, ctaId, packLLVector(loc, {val}, rewriter),
@@ -268,19 +288,18 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
   assert(vec * elemBitwidth <= 128);
 
   // Get pointer to remote shared memory if needed.
-  if (ctaId.has_value()) {
-    ptr = mapa(rewriter, loc, ptr, *ctaId, pred);
-  }
+  if (ctaId.has_value() && isShared)
+    ptr = mapSharedToClusterPointer(rewriter, loc, ptr, *ctaId);
 
   PTXBuilder builder;
   auto st = builder.create<>("st")
-                ->o("shared::cluster", ctaId.has_value())
-                .o("shared", !ctaId.has_value())
+                ->o("shared::cluster", useCluster)
+                .o("shared", !useCluster)
                 .v(vec, /*predicate=*/vec > 1)
                 .b(elemBitwidth);
-  auto *ptrOpr = builder.newAddrOperand(ptr, ctaId.has_value() ? "l" : "r");
+  auto *ptrOpr = builder.newAddrOperand(ptr, "l");
 
-  if (isConstantTruePred(pred) && !ctaId.has_value()) {
+  if (isConstantTruePred(pred) && !useCluster) {
     b.store(val, ptr, /*align=*/vec * elemBitwidth / 8);
   } else {
     PTXBuilder::Operand *valOpr;
@@ -305,7 +324,15 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   MLIRContext *ctx = rewriter.getContext();
   auto ptrTy = cast<LLVM::LLVMPointerType>(ptr.getType());
-  assert(ptrTy.getAddressSpace() == 3 && "Invalid addr space for load_dsmem");
+  const bool isShared =
+      ptrTy.getAddressSpace() ==
+      static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace);
+  const bool isClusterShared =
+      ptrTy.getAddressSpace() ==
+      static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedClusterMemorySpace);
+  assert((isShared || isClusterShared) &&
+         "Invalid addr space for load_dsmem");
+  const bool useCluster = ctaId.has_value() || isClusterShared;
 
   if (!isa<VectorType>(loadTy)) {
     SmallVector<Value> values = unpackLLVector(
@@ -386,19 +413,18 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
   assert(vec * elemBitwidth <= 128);
 
   // Get pointer to remote shared memory if needed.
-  if (ctaId.has_value()) {
-    ptr = mapa(rewriter, loc, ptr, *ctaId, pred);
-  }
+  if (ctaId.has_value() && isShared)
+    ptr = mapSharedToClusterPointer(rewriter, loc, ptr, *ctaId);
 
   PTXBuilder builder;
   auto ld = builder.create<>("ld")
-                ->o("shared::cluster", ctaId.has_value())
-                .o("shared", !ctaId.has_value())
+                ->o("shared::cluster", useCluster)
+                .o("shared", !useCluster)
                 .v(vec, /*predicate=*/vec > 1)
                 .b(elemBitwidth);
 
   Value load;
-  if (isConstantTruePred(pred) && !ctaId.has_value()) {
+  if (isConstantTruePred(pred) && !useCluster) {
     Type resultTy = vec == 1 ? Type(int_ty(elemBitwidth))
                              : Type(vec_ty(int_ty(elemBitwidth), vec));
     load = b.load(resultTy, ptr, /*align=*/vec * elemBitwidth / 8);
@@ -415,7 +441,7 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
     std::string elemConstraint = "=" + getConstraintForBitwidth(elemBitwidth);
     auto *outOpr = vec == 1 ? builder.newOperand(elemConstraint)
                             : builder.newListOperand(vec, elemConstraint);
-    ld(outOpr, builder.newAddrOperand(ptr, ctaId.has_value() ? "l" : "r"))
+    ld(outOpr, builder.newAddrOperand(ptr, "l"))
         .predicate(pred, "b");
 
     Type resultTy =

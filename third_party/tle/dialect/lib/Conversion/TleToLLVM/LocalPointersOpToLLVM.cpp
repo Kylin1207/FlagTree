@@ -21,6 +21,23 @@ namespace ttg = mlir::triton::gpu;
 namespace tle = mlir::triton::tle;
 constexpr llvm::StringLiteral kRemoteShardCarrierAttr =
     "tle.remote_shard_id_carrier";
+constexpr llvm::StringLiteral kTTContiguityAttr = "tt.contiguity";
+constexpr llvm::StringLiteral kTTDivisibilityAttr = "tt.divisibility";
+constexpr llvm::StringLiteral kTTConstancyAttr = "tt.constancy";
+
+void copyAxisInfoAttrs(Operation *src, Operation *dst) {
+  if (!src || !dst)
+    return;
+  auto tryCopy = [&](StringRef name) {
+    if (dst->getDiscardableAttr(name))
+      return;
+    if (auto attr = src->getDiscardableAttr(name))
+      dst->setDiscardableAttr(name, attr);
+  };
+  tryCopy(kTTContiguityAttr);
+  tryCopy(kTTDivisibilityAttr);
+  tryCopy(kTTConstancyAttr);
+}
 
 struct LocalPointersOpConversion
     : public ConvertOpToLLVMPattern<tle::LocalPointersOp> {
@@ -177,10 +194,21 @@ struct RemotePointersOpConversion
   LogicalResult
   matchAndRewrite(tle::RemotePointersOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    Value offset = op.getShardId();
+    if (auto srcTy = dyn_cast<RankedTensorType>(op.getSrc().getType())) {
+      auto shardTy = dyn_cast<RankedTensorType>(offset.getType());
+      if (!shardTy || shardTy.getShape() != srcTy.getShape() ||
+          shardTy.getEncoding() != srcTy.getEncoding()) {
+        auto offsetTy = RankedTensorType::get(srcTy.getShape(), offset.getType(),
+                                              srcTy.getEncoding());
+        offset = rewriter.create<triton::SplatOp>(op.getLoc(), offsetTy, offset);
+      }
+    }
     auto addPtr = rewriter.create<triton::AddPtrOp>(op.getLoc(), op.getType(),
-                                                    op.getSrc(),
-                                                    op.getShardId());
+                                                    op.getSrc(), offset);
     addPtr->setAttr(kRemoteShardCarrierAttr, rewriter.getUnitAttr());
+    copyAxisInfoAttrs(op.getOperation(), addPtr.getOperation());
+    copyAxisInfoAttrs(op.getSrc().getDefiningOp(), addPtr.getOperation());
     rewriter.replaceOp(op, addPtr.getResult());
     return success();
   }

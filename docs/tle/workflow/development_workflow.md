@@ -27,10 +27,13 @@ Run at least:
 1. `conda run -n flagtree pytest python/test/tle/unit -s`
 2. `conda run -n flagtree pytest python/test/tle/integration -s`
 3. If C++ changed: `conda run -n flagtree ninja -C build/cmake.linux-x86_64-cpython-3.10`
+4. Produce a fix summary using `docs/tle/templates/fix_summary.md` for every bug fix.
 
 ## 5. Documentation and Handoff
 
 1. Update `docs/tle/backlog/backlog.md` status.
-2. Record lessons in `docs/tle/lessons_learned/`.
-3. Update `AGENTS.md` if process or entry points changed.
-
+2. Record lessons in `docs/tle/lessons_learned/` using `docs/tle/templates/lessons_entry.md`.
+3. Paste/update the fix summary (Root Cause / Changes / Validation / Risk and Follow-up) in PR/task thread.
+4. Update `AGENTS.md` if process or entry points changed.
+5. Ensure lessons include a condensed process:
+   - Repro -> IR/PTX Evidence -> Minimal Change -> Validation -> Benchmark delta.

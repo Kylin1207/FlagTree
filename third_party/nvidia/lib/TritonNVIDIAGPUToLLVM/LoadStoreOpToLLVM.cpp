@@ -11,6 +11,9 @@
 
 #include "PatternTritonGPUOpToLLVM.h"
 #include "Utility.h"
+// begin flagtree tle
+#include "tle/dialect/include/Conversion/TleToLLVM/RemotePointerUtils.h"
+// end flagtree tle
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -23,15 +26,16 @@
 #include "triton/Tools/LayoutUtils.h"
 
 #include <cassert>
-// begin flagtree tle
 #include <optional>
-// end flagtree tle
 
 using namespace mlir;
 using namespace mlir::triton;
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
+// begin flagtree tle
+namespace tte = mlir::triton::tle;
+// end flagtree tle
 
 using ::mlir::LLVM::delinearize;
 using ::mlir::LLVM::getSharedMemoryObjectFromStruct;
@@ -65,39 +69,6 @@ std::optional<unsigned> inferPtrAddrSpace(llvm::ArrayRef<Value> ptrElems) {
 bool isSharedPointerValue(llvm::ArrayRef<Value> ptrElems,
                           unsigned defaultAddrSpace = 1) {
   return inferPtrAddrSpace(ptrElems).value_or(defaultAddrSpace) == 3;
-}
-
-constexpr llvm::StringLiteral kRemoteShardCarrierAttr =
-    "tle.remote_shard_id_carrier";
-
-struct RemoteCTAInfo {
-  std::optional<int32_t> constCTAId;
-  Value dynamicCTAId;
-  Value basePtr;
-
-  bool hasRemoteCTAId() const { return constCTAId || dynamicCTAId; }
-};
-
-RemoteCTAInfo getRemoteCTAInfoFromPtrValue(Value ptr,
-                                           ConversionPatternRewriter &rewriter) {
-  RemoteCTAInfo info;
-  info.basePtr = ptr;
-
-  Operation *defOp = ptr.getDefiningOp();
-  if (!defOp)
-    return info;
-
-  auto ctaAttr = defOp->getAttrOfType<IntegerAttr>("tle.remote_cta_id");
-  if (ctaAttr)
-    info.constCTAId = static_cast<int32_t>(ctaAttr.getInt());
-
-  if (auto addPtrOp = dyn_cast<triton::AddPtrOp>(defOp);
-      addPtrOp && addPtrOp->hasAttr(kRemoteShardCarrierAttr)) {
-    info.basePtr = addPtrOp.getPtr();
-    info.dynamicCTAId = rewriter.getRemappedValue(addPtrOp.getOffset());
-  }
-
-  return info;
 }
 // end flagtree tle
 
@@ -135,6 +106,19 @@ Value emitRedundantThreadPredicate(
 
 unsigned getCanonicalIndex(unsigned index, unsigned freeVarMask) {
   return index & ~freeVarMask;
+}
+
+bool canReuseCanonicalPointer(llvm::ArrayRef<Value> ptrElems,
+                              size_t currentStart, size_t canonicalStart,
+                              size_t width) {
+  if (currentStart + width > ptrElems.size() ||
+      canonicalStart + width > ptrElems.size())
+    return false;
+  for (size_t i = 0; i < width; ++i) {
+    if (ptrElems[currentStart + i] != ptrElems[canonicalStart + i])
+      return false;
+  }
+  return true;
 }
 
 std::string getRegisterSizeCode(int size, bool is_float) {
@@ -253,11 +237,27 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     Value llPtr = adaptor.getPtr();
     Value llMask = adaptor.getMask();
     Value llOther = adaptor.getOther();
+    // begin flagtree tle
+    auto remoteCTAInfo = tte::getRemotePointerInfoFromValue(ptr, rewriter);
+    // end flagtree tle
 
     // Determine the vectorization size
     Type valueElemTy =
         typeConverter->convertType(getElementTypeOrSelf(op.getType()));
     unsigned vec = getVectorSize(ptr);
+    // begin flagtree tle
+    // remote metadata carriers can pessimize AxisInfo on the load pointer.
+    // Reuse the underlying pointer as a hint to recover vector width.
+    if (remoteCTAInfo.hasRemoteCTAId() && !llMask) {
+      vec = std::max(vec, tte::inferTlePointerVectorSize(ptr, axisAnalysisPass));
+      if (remoteCTAInfo.vectorHintPtr && remoteCTAInfo.vectorHintPtr != ptr) {
+        vec = std::max(
+            vec, tte::inferTlePointerVectorSize(remoteCTAInfo.vectorHintPtr,
+                                                axisAnalysisPass));
+        vec = std::max(vec, getVectorSize(remoteCTAInfo.vectorHintPtr));
+      }
+    }
+    // end flagtree tle
     unsigned numElems = getTotalElemsPerThread(ptr.getType());
     unsigned vecOrig = vec;
     if (llMask) {
@@ -276,7 +276,6 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     }
     // Get the LLVM values for pointers
     // begin flagtree tle
-    auto remoteCTAInfo = getRemoteCTAInfoFromPtrValue(ptr, rewriter);
     Value llBasePtr = llPtr;
     if (remoteCTAInfo.basePtr != ptr) {
       llBasePtr = rewriter.getRemappedValue(remoteCTAInfo.basePtr);
@@ -350,6 +349,8 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
 
     // Load redundantly in all dims except reg
     auto freeVarMasks = getFreeVariableMasks(ptr.getType());
+    Value threadPred =
+        emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
     uint32_t regMask = freeVarMasks[str_attr("reg")];
 
     LDBG("LoadOp numElems = " << numElems << " vec = " << vec
@@ -361,13 +362,61 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
       Value ctaId =
           remoteCTAInfo.constCTAId ? b.i32_val(*remoteCTAInfo.constCTAId)
                                    : remoteDynamicCTAId;
+      auto maybeStripShardOffset = [&](Value ptrVal) -> Value {
+        if (!remoteCTAInfo.stripShardOffsetFromPtr)
+          return ptrVal;
+        Value negCtaId = rewriter.create<LLVM::SubOp>(
+            loc, rewriter.getI32Type(), b.i32_val(0), ctaId);
+        return b.gep(ptrVal.getType(), valueElemTy, ptrVal, negCtaId);
+      };
+      size_t remoteBaseIdx = 0;
       for (size_t idx = 0; idx < numElems; ++idx) {
-        Value pred = llMask ? maskElems[idx] : b.true_val();
-        Value loaded = targetInfo.loadDShared(
-            rewriter, loc, ptrElems[idx], ctaId, valueElemTy, pred, op);
-        if (llMask && other)
-          loaded = b.select(pred, loaded, otherElems[idx]);
-        loadedVals.push_back(loaded);
+        if (isCanonicalIndex(idx, regMask)) {
+          remoteBaseIdx = idx;
+          break;
+        }
+      }
+      Value remoteSharedBasePtr = maybeStripShardOffset(ptrElems[remoteBaseIdx]);
+      Value remoteClusterBasePtr =
+          targetInfo.mapSharedToClusterPointer(rewriter, loc, remoteSharedBasePtr, ctaId);
+      Type remoteClusterPtrTy = remoteClusterBasePtr.getType();
+      Type i64Ty = rewriter.getI64Type();
+      auto ptrToI64 = [&](Value ptrVal) -> Value {
+        return rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, ptrVal);
+      };
+      Value remoteSharedBaseI64 = ptrToI64(remoteSharedBasePtr);
+      Value remoteClusterBaseI64 = ptrToI64(remoteClusterBasePtr);
+      auto materializeRemotePtr = [&](Value ptrVal) -> Value {
+        Value sharedPtr = maybeStripShardOffset(ptrVal);
+        Value delta = rewriter.create<LLVM::SubOp>(loc, i64Ty, ptrToI64(sharedPtr),
+                                                   remoteSharedBaseI64);
+        Value mappedI64 =
+            rewriter.create<LLVM::AddOp>(loc, i64Ty, remoteClusterBaseI64, delta);
+        return rewriter.create<LLVM::IntToPtrOp>(loc, remoteClusterPtrTy, mappedI64);
+      };
+      for (size_t vecStart = 0; vecStart < numElems; vecStart += vec) {
+        if (auto canonicalVecStart = getCanonicalIndex(vecStart, regMask);
+            vecStart != canonicalVecStart &&
+            canReuseCanonicalPointer(ptrElems, vecStart, canonicalVecStart, vec)) {
+          for (size_t iVec = 0; iVec < vec; ++iVec)
+            loadedVals.push_back(loadedVals[canonicalVecStart + iVec]);
+          continue;
+        }
+        Value pred = llMask ? maskElems[vecStart] : b.true_val();
+        Value remotePtr = materializeRemotePtr(ptrElems[vecStart]);
+        Type remoteLoadTy =
+            vec == 1 ? valueElemTy : Type(LLVM::getVectorType(valueElemTy, vec));
+        Value loadedVec = targetInfo.loadDShared(rewriter, loc, remotePtr,
+                                                 std::nullopt, remoteLoadTy, pred, op);
+        auto loadedElems = unpackLLVector(loc, loadedVec, rewriter);
+        assert(loadedElems.size() == vec);
+        for (size_t iVec = 0; iVec < vec; ++iVec) {
+          size_t idx = vecStart + iVec;
+          Value loaded = loadedElems[iVec];
+          if (llMask && other)
+            loaded = b.select(maskElems[idx], loaded, otherElems[idx]);
+          loadedVals.push_back(loaded);
+        }
       }
       Type llvmResultStructTy = typeConverter->convertType(op.getType());
       Value resultStruct = packLLElements(loc, typeConverter, loadedVals,
@@ -559,7 +608,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     unsigned elemsPerThread = getTotalElemsPerThread(ptr.getType());
 
     // begin flagtree tle
-    auto remoteCTAInfo = getRemoteCTAInfoFromPtrValue(ptr, rewriter);
+    auto remoteCTAInfo = tte::getRemotePointerInfoFromValue(ptr, rewriter);
     Value llBasePtr = llPtr;
     if (remoteCTAInfo.basePtr != ptr) {
       llBasePtr = rewriter.getRemappedValue(remoteCTAInfo.basePtr);
@@ -636,16 +685,26 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       Value ctaId =
           remoteCTAInfo.constCTAId ? b.i32_val(*remoteCTAInfo.constCTAId)
                                    : remoteDynamicCTAId;
-      for (size_t idx = 0; idx < elemsPerThread; ++idx) {
-        if (auto canonicalIdx = getCanonicalIndex(idx, regMask);
-            idx != canonicalIdx) {
+      auto maybeStripShardOffset = [&](Value ptrVal) -> Value {
+        if (!remoteCTAInfo.stripShardOffsetFromPtr)
+          return ptrVal;
+        Value negCtaId = rewriter.create<LLVM::SubOp>(
+            loc, rewriter.getI32Type(), b.i32_val(0), ctaId);
+        return b.gep(ptrVal.getType(), valueElemTy, ptrVal, negCtaId);
+      };
+      // Conservative path: preserve correctness for all remote pointer shapes.
+      for (size_t vecStart = 0; vecStart < elemsPerThread; vecStart += vec) {
+        if (!isCanonicalIndex(vecStart, regMask))
           continue;
+        for (size_t iVec = 0; iVec < vec; ++iVec) {
+          size_t idx = vecStart + iVec;
+          Value pred = threadPred ? threadPred : b.true_val();
+          if (llMask)
+            pred = maybeAnd(rewriter, loc, pred, maskElems[idx]);
+          Value remotePtr = maybeStripShardOffset(ptrElems[idx]);
+          targetInfo.storeDShared(rewriter, loc, remotePtr, ctaId,
+                                  valueElems[idx], pred);
         }
-        Value pred = threadPred ? threadPred : b.true_val();
-        if (llMask)
-          pred = maybeAnd(rewriter, loc, pred, maskElems[idx]);
-        targetInfo.storeDShared(rewriter, loc, ptrElems[idx], ctaId,
-                                valueElems[idx], pred);
       }
       rewriter.eraseOp(op);
       return success();

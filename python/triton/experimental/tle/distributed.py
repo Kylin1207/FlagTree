@@ -8,7 +8,6 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import triton.language.core as tl
 
-
 def _prod(values: Iterable[int]) -> int:
     result = 1
     for value in values:
@@ -506,6 +505,62 @@ def _apply_mesh_cluster_launch(mesh: device_mesh, _semantic) -> tuple[int, int, 
     return cluster_dims
 
 
+def _resolve_launch_axis(mesh: device_mesh, axis: str | int) -> int:
+    if isinstance(axis, int):
+        ndim = len(mesh.launch_shape)
+        axis_idx = axis + ndim if axis < 0 else axis
+        if axis_idx < 0 or axis_idx >= ndim:
+            raise IndexError(f"axis index {axis} out of range for launch ndim {ndim}")
+        return axis_idx
+
+    if isinstance(axis, str):
+        if axis not in mesh.launch_dim_names:
+            raise ValueError(
+                f"unknown mesh axis {axis!r}; available launch axes: {mesh.launch_dim_names}"
+            )
+        return mesh.launch_dim_names.index(axis)
+
+    raise TypeError(f"axis must be int or str, got {type(axis).__name__}")
+
+
+@tl.builtin
+def shard_id(
+    mesh: device_mesh,
+    axis: str | int,
+    _semantic=None,
+):
+    """
+    Return current shard coordinate on the given launch mesh axis.
+
+    `axis` can be axis name (`str`) or axis index (`int`, supports negative).
+    The returned value is a scalar int32 tensor.
+    """
+    mesh = tl._unwrap_if_constexpr(mesh)
+    axis = tl._unwrap_if_constexpr(axis)
+
+    if not isinstance(mesh, device_mesh):
+        raise TypeError(f"mesh must be device_mesh, got {type(mesh).__name__}")
+    axis_idx = _resolve_launch_axis(mesh, axis)
+    launch_shape = tuple(int(v) for v in mesh.launch_shape)
+    launch_size = _prod(launch_shape)
+    if launch_size <= 0:
+        raise ValueError(f"invalid launch mesh shape: {launch_shape}")
+
+    _apply_mesh_cluster_launch(mesh, _semantic)
+    linear = tl.program_id(0, _semantic=_semantic)
+    if launch_size > 1:
+        linear = _semantic.mod(linear, launch_size)
+
+    stride = _prod(launch_shape[axis_idx + 1:]) if axis_idx + 1 < len(launch_shape) else 1
+    coord = linear
+    if stride > 1:
+        coord = _semantic.floordiv(coord, stride)
+    dim = launch_shape[axis_idx]
+    if dim > 1:
+        coord = _semantic.mod(coord, dim)
+    return coord
+
+
 @tl.builtin
 def distributed_barrier(mesh: device_mesh | None = None, _semantic=None):
     """
@@ -618,6 +673,72 @@ def _normalize_runtime_remote_shard_id_tensor(shard_id_tensor: tl.tensor) -> tl.
     return shard_id_tensor
 
 
+def _create_remote_pointers_tensor(
+    tensor: tl.tensor,
+    shard_id_tensor: tl.tensor,
+    _semantic,
+) -> tl.tensor | None:
+    builder = _semantic.builder
+    remote_type = tensor.type.to_ir(builder)
+    try:
+        remote_op = builder.create_remote_pointers(
+            remote_type,
+            tensor.handle,
+            shard_id_tensor.handle,
+        )
+    except AttributeError:
+        return None
+    return tl.tensor(remote_op.get_result(0), tensor.type)
+
+
+def _remote_pointer(
+    tensor: tl.tensor,
+    shard_id,
+    scope: device_mesh | None = None,
+    _semantic=None,
+) -> tl.tensor:
+    if not isinstance(tensor, tl.tensor):
+        raise TypeError(f"tensor must be tl.tensor, got {type(tensor).__name__}")
+    if not tensor.dtype.is_ptr():
+        raise TypeError("remote(pointer, ...) internal path requires a pointer tensor")
+    if tensor.dtype.address_space != 3:
+        raise ValueError("remote(pointer, ...) internal path requires shared-memory pointers (addrspace=3)")
+
+    # Compile-time constant shard id path.
+    if isinstance(shard_id, (int, tuple, list)):
+        linear_shard_id = _normalize_compile_time_remote_shard_id(shard_id, scope)
+        # Prefer explicit remote_pointers op so remote metadata survives
+        # downstream layout/materialization rewrites.
+        shard_id_tensor = _semantic.to_tensor(int(linear_shard_id))
+        shard_id_tensor = _normalize_runtime_remote_shard_id_tensor(shard_id_tensor)
+        remote_ptr = _create_remote_pointers_tensor(tensor, shard_id_tensor, _semantic)
+        if remote_ptr is not None:
+            return remote_ptr
+
+        # Compatibility fallback for older TLE extensions.
+        tensor.handle.set_attr("tle.remote_cta_id", _semantic.builder.get_int32_attr(int(linear_shard_id)))
+        return tensor
+
+    # Runtime shard id path. This materializes a TLE op that carries the
+    # runtime i32 shard id through lowering.
+    shard_id_tensor = shard_id if isinstance(shard_id, tl.tensor) else _semantic.to_tensor(shard_id)
+    shard_id_tensor = _normalize_runtime_remote_shard_id_tensor(shard_id_tensor)
+
+    # Preferred path: keep remote semantics through a dedicated TLE op so the
+    # shard-id survives local_pointers lowering.
+    remote_ptr = _create_remote_pointers_tensor(tensor, shard_id_tensor, _semantic)
+    if remote_ptr is not None:
+        return remote_ptr
+
+    # Compatibility fallback for older TLE extensions.
+    # Represent runtime shard_id with a marked addptr op. The lowering rewrites
+    # pointer arithmetic to use the original base pointer and consumes the
+    # runtime i32 from addptr's offset operand as cluster CTA id.
+    remote_ptr = _semantic.add(tensor, shard_id_tensor, sanitize_overflow=True)
+    remote_ptr.handle.set_attr("tle.remote_shard_id_carrier", _semantic.builder.get_unit_attr())
+    return remote_ptr
+
+
 @tl.builtin
 def remote(
     tensor,
@@ -628,8 +749,7 @@ def remote(
     """
     M3 entrypoint: mark distributed access target.
 
-    Supported inputs:
-    - pointer tl.tensor (legacy path): returns remote pointer tensor.
+    Supported input:
     - tle buffered_tensor: returns a remote-marked buffered tensor; caller
       should then use `tleg.local_ptr(...)` to materialize remote pointers.
 
@@ -647,7 +767,12 @@ def remote(
     # Buffered tensor path: carry remote metadata and let `local_ptr` materialize
     # remote pointers later.
     if _is_buffered_tensor_like(tensor):
-        if hasattr(tensor, "_tle_remote_shard_id"):
+        if (
+            hasattr(tensor, "_tle_remote_shard_id")
+            or hasattr(tensor, "_tle_remote_scope")
+            or hasattr(tensor.type, "_tle_remote_shard_id")
+            or hasattr(tensor.type, "_tle_remote_scope")
+        ):
             raise ValueError(
                 "remote(buffered_tensor, ...) cannot be applied twice; "
                 "materialize pointer views with tleg.local_ptr(remote_buffer, indices)"
@@ -664,35 +789,29 @@ def remote(
                     )
                 shard_id_tensor = _semantic.to_tensor(shard_id)
             shard_id = _normalize_runtime_remote_shard_id_tensor(shard_id_tensor)
+        # Keep remote metadata on buffered_tensor.type so it survives value
+        # reconstruction in JIT interpreter paths (value-level attrs can drop).
         remote_buffer = copy.copy(tensor)
+        remote_type = copy.copy(tensor.type)
+        try:
+            setattr(remote_type, "_tle_remote_shard_id", shard_id)
+            setattr(remote_type, "_tle_remote_scope", scope)
+            remote_buffer.type = remote_type
+        except AttributeError:
+            # Type object may be immutable for unit-test stubs.
+            pass
+        # Keep value-level metadata as a secondary carrier to maximize
+        # compatibility with existing JIT object reconstruction paths.
         setattr(remote_buffer, "_tle_remote_shard_id", shard_id)
         setattr(remote_buffer, "_tle_remote_scope", scope)
         return remote_buffer
 
-    if not isinstance(tensor, tl.tensor):
-        raise TypeError(f"tensor must be tl.tensor or tle.buffered_tensor, got {type(tensor).__name__}")
-    if not tensor.dtype.is_ptr():
-        raise TypeError("remote(tensor, ...) currently requires a pointer tensor")
-    if tensor.dtype.address_space != 3:
-        raise ValueError("remote(tensor, ...) currently requires shared-memory pointers (addrspace=3)")
-
-    # Compile-time constant shard id path (existing behavior).
-    if isinstance(shard_id, (int, tuple, list)):
-        linear_shard_id = _normalize_compile_time_remote_shard_id(shard_id, scope)
-        tensor.handle.set_attr("tle.remote_cta_id", _semantic.builder.get_int32_attr(linear_shard_id))
-        return tensor
-
-    # Runtime shard id path. This materializes a TLE op that carries the
-    # runtime i32 shard id through lowering.
-    shard_id_tensor = shard_id if isinstance(shard_id, tl.tensor) else _semantic.to_tensor(shard_id)
-    shard_id_tensor = _normalize_runtime_remote_shard_id_tensor(shard_id_tensor)
-
-    # Represent runtime shard_id with a marked addptr op. The lowering rewrites
-    # pointer arithmetic to use the original base pointer and consumes the
-    # runtime i32 from addptr's offset operand as cluster CTA id.
-    remote_ptr = _semantic.add(tensor, shard_id_tensor, sanitize_overflow=True)
-    remote_ptr.handle.set_attr("tle.remote_shard_id_carrier", _semantic.builder.get_unit_attr())
-    return remote_ptr
+    if isinstance(tensor, tl.tensor):
+        raise TypeError(
+            "remote(...) only accepts tle.buffered_tensor; "
+            "use remote(buffered_tensor, shard_id, scope) + local_ptr(...)"
+        )
+    raise TypeError(f"tensor must be tle.buffered_tensor, got {type(tensor).__name__}")
 
 
 def distributed_dot(a: ShardedTensor, b: ShardedTensor, c: ShardedTensor | None = None):

@@ -19,6 +19,9 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+// begin flagtree tle
+#include "tle/dialect/include/Analysis/AxisInfoExt.h"
+// end flagtree tle
 #include "tle/dialect/include/Conversion/TleToLLVM/DSLRegionOpToLLVM.h"
 // begin flagtree tle
 #include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
@@ -151,7 +154,9 @@ struct ConvertTritonGPUToLLVM
     // because the call op has to know the shared memory base address of each
     // function
     initSharedMemory(typeConverter);
-    ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
+    // begin flagtree tle
+    mlir::triton::tle::ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
+    // end flagtree tle
 
     RewritePatternSet patterns(context);
     int benefit = patternBenefitPrioritizeOverLLVMConversions;
