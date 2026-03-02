@@ -69,6 +69,7 @@ SmallVector<Value> createTLERawCall(TritonOpBuilder &self,
       }
     }
   }
+  assert(func && "No function found in LLVM IR text");
   OpBuilder &builder = self.getBuilder();
   Operation *curOp = builder.getInsertionBlock()->getParentOp();
   while (curOp && curOp->getParentOp() && !isa<ModuleOp>(curOp)) {
