@@ -480,7 +480,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         """
         仅分析普通 tl.load：从地址表达式中找到依赖的 tl.arange(0, BLOCK_X)，
         用 BLOCK_X 作为该维的 bs；维度名 M/N/K 从该索引变量的 input 依赖推断。
-        返回: { "M": "BLOCK_M", "N": "BLOCK_N", "K": "BLOCK_K" } 形式的 map。
+        返回: { "BLOCK_M": "M", "BLOCK_N": "N", "BLOCK_K": "K" } 形式的 map。
         """
         load_map: Dict[str, str] = {}
         for addr_expr in self.load_addresses:
@@ -492,9 +492,9 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 blocks = self._extract_arange_block_sizes_recursive(var_name)
                 input_deps, _ = self.get_dependencies(var_name)
                 if len(input_deps) == 1 and len(blocks) == 1:
-                    dim_name = list(input_deps)[0]
-                    block_name = list(blocks)[0]
-                    load_map[dim_name] = block_name
+                    ts_name = list(input_deps)[0]
+                    bs_name = list(blocks)[0]
+                    load_map[bs_name] = ts_name
         return load_map
 
     # ---------- 分析函数二：仅针对 desc.load，通过 desc.block_shape 得到 M/N/K 与 BLOCK_* 及 a_desc/b_desc ----------
@@ -628,8 +628,8 @@ def analyze_kernel_dependencies(jit_fn, pre_hook_fn: Optional[object] = None) ->
         if knobs.autotuning.print:
             if load_map:
                 print(f"\n=== FlagTree dep_analyzer tl.load (by tl.arange): {getattr(jit_fn, '__name__', 'unknown')} ===")
-                for dim_name, block_name in load_map.items():
-                    print(f"  dim '{dim_name}' -> block '{block_name}'")
+                for bs_name, ts_name in load_map.items():
+                    print(f"  block '{bs_name}' -> dim '{ts_name}'")
             if tma_map:
                 print(f"\n=== FlagTree dep_analyzer desc.load (by block_shape): {getattr(jit_fn, '__name__', 'unknown')} ===")
                 for desc_name, bs_names_set in tma_map.items():

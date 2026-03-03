@@ -220,8 +220,8 @@ class Autotuner(KernelInterface):
         if load_map:
             if knobs.autotuning.print:
                 print("[AABS] 1. adjust bs in tl_load")
-            for ts_name, bs_name in load_map.items():
-                self.adjust_block_size_tl_load(current, config, ts_name, bs_name)
+            for bs_name, ts_name in load_map.items():
+                self.adjust_block_size_tl_load(current, config, bs_name, ts_name)
 
         if tma_map:
             if knobs.autotuning.print:
