@@ -1,4 +1,5 @@
 import ast
+import inspect
 from typing import Dict, Set, Optional, Tuple, List
 from functools import lru_cache
 from triton import knobs
@@ -556,7 +557,6 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         # 2) 从 pre_hook 解析 nargs["x"].block_shape = [...]，合并到 desc_block_shapes（覆盖或补充 host 描述符）
         if pre_hook_fn is not None and hasattr(pre_hook_fn, "__code__"):
             try:
-                import inspect
                 try:
                     hook_src = inspect.getsource(pre_hook_fn)
                 except Exception:
@@ -627,15 +627,15 @@ def analyze_kernel_dependencies(jit_fn, pre_hook_fn: Optional[object] = None) ->
 
         if knobs.autotuning.print:
             if load_map:
-                print(f"\n=== FlagTree dep_analyzer tl.load (by tl.arange): {getattr(jit_fn, '__name__', 'unknown')} ===")
+                print(f"\n=== FlagTree adjust_kernel_param tl.load (by tl.arange): {getattr(jit_fn, '__name__', 'unknown')} ===")
                 for bs_name, ts_name in load_map.items():
                     print(f"  block '{bs_name}' -> dim '{ts_name}'")
             if tma_map:
-                print(f"\n=== FlagTree dep_analyzer desc.load (by block_shape): {getattr(jit_fn, '__name__', 'unknown')} ===")
+                print(f"\n=== FlagTree adjust_kernel_param desc.load (by block_shape): {getattr(jit_fn, '__name__', 'unknown')} ===")
                 for desc_name, bs_names_set in tma_map.items():
                     print(f"  desc '{desc_name}' -> block shapes {bs_names_set}")
             if bs_m_map or bs_k_map:
-                print(f"\n=== FlagTree dep_analyzer tl.dot: {getattr(jit_fn, '__name__', 'unknown')} ===")
+                print(f"\n=== FlagTree adjust_kernel_param tl.dot: {getattr(jit_fn, '__name__', 'unknown')} ===")
                 print(f"  BLOCK_M -> params: {bs_m_map}")
                 print(f"  BLOCK_K -> params: {bs_k_map}")
             print("================================================\n")
@@ -643,9 +643,146 @@ def analyze_kernel_dependencies(jit_fn, pre_hook_fn: Optional[object] = None) ->
         return (load_map, tma_map, bs_m_map, bs_k_map)
 
     except Exception as e:
-        print(f"Warning: dep_analyzer failed: {e}")
+        print(f"Warning: adjust_kernel_param failed: {e}")
         return (None, None, None, None)
 
 
 def clear_analysis_cache():
     _analysis_cache.clear()
+
+
+# =====================================================================
+# Block-size adjustment helpers (used by Autotuner._auto_adjust_block_sizes)
+# =====================================================================
+
+def update_bs(nargs, current, config, bs_name, bs, title, reason):
+    if knobs.autotuning.print:
+        print(f'[AABS] {title}: adjust {bs_name} {current[bs_name]} => {bs} because {bs_name} {reason}')
+    current[bs_name] = bs
+    config.kwargs[bs_name] = bs
+
+
+def adjust_block_size_tl_load(nargs, current, config, bs_name, ts_name):
+    if bs_name not in current or ts_name not in nargs:
+        return
+    bs = current[bs_name]
+    ts = nargs[ts_name]
+    if not isinstance(bs, int) or not isinstance(ts, int):
+        return
+    if bs > ts:    # block_size > tensor_size
+        from triton import next_power_of_2
+        update_bs(nargs, current, config, bs_name, next_power_of_2(ts),
+                  "tl.load", f"> {ts}")
+
+
+def adjust_block_size_tma(nargs, current, config, desc_name, bs_names):
+    import torch
+    from triton.tools.tensor_descriptor import TensorDescriptor
+    from triton import next_power_of_2
+    if desc_name not in nargs:
+        return
+    if not isinstance(nargs[desc_name], TensorDescriptor):
+        return
+    desc_base: torch.Tensor = nargs[desc_name].base
+    if not isinstance(desc_base, torch.Tensor):
+        return
+    if len(desc_base.shape) != len(bs_names):
+        if knobs.autotuning.print:
+            print(f"[AABS] Warning: len(desc_base.shape)={len(desc_base.shape)} != {len(bs_names)}=len(bs_names), bs_names={bs_names}")
+        return
+    for shape_size, bs_name in zip(desc_base.shape, bs_names):
+        bs = current[bs_name]
+        if not isinstance(shape_size, int) or not isinstance(bs, int):
+            continue
+        if bs > shape_size:
+            update_bs(nargs, current, config, bs_name, next_power_of_2(shape_size),
+                      "TMA", f"> {shape_size}")
+
+
+def adjust_block_size_dot_k_dim(nargs, current, config, bs_k_map, limit):
+    for bs_name in bs_k_map.keys():
+        if bs_name not in current:
+            continue
+        bs = current[bs_name]
+        if not isinstance(bs, int):
+            continue
+        if bs < limit:
+            update_bs(nargs, current, config, bs_name, limit,
+                      "tl.dot", f"< {limit}=limit_k")
+
+
+def adjust_block_size_dot_m_dim(nargs, current, config, bs_k_map, bs_m_map, limit_bytes):
+    import torch
+    from triton.tools.tensor_descriptor import TensorDescriptor
+
+    bs_k = 1
+    for k_name in bs_k_map.keys():
+        if k_name in current and isinstance(current[k_name], int):
+            bs_k = current[k_name]
+            break
+
+    for bs_name, param_names in bs_m_map.items():
+        if bs_name not in current:
+            continue
+        bs = current[bs_name]
+        if not isinstance(bs, int):
+            continue
+        elem_type_size = None
+        for pname in param_names:
+            if pname not in nargs:
+                continue
+            narg = nargs[pname]
+            if isinstance(narg, TensorDescriptor):
+                narg = narg.base
+            if isinstance(narg, torch.Tensor):
+                elem_type_size = narg.element_size()
+                break
+        if elem_type_size is None:
+            continue
+        # SWIZZLE_NONE: bs_k * elem_type_size = 16B, limit = 8
+        # SWIZZLE_16B:  bs_k * elem_type_size = 16B, limit = 8
+        # SWIZZLE_32B:  bs_k * elem_type_size = 32B, limit = 4
+        # SWIZZLE_64B:  bs_k * elem_type_size = 64B, limit = 2
+        # SWIZZLE_128B: bs_k * elem_type_size = 128B, limit = 1
+        limit = max(int(limit_bytes / bs_k / elem_type_size), 1)
+        if bs < limit:
+            update_bs(nargs, current, config, bs_name, limit,
+                      "tl.dot", f"< {limit}=limit_m")
+
+
+def auto_adjust_block_sizes(nargs, fn, configs, current, config):
+    pre_hook_fn = getattr(config, "pre_hook", None) or (configs[0].pre_hook if configs else None)
+    load_map, tma_map, bs_m_map, bs_k_map = analyze_kernel_dependencies(fn, pre_hook_fn=pre_hook_fn)
+
+    if load_map:
+        if knobs.autotuning.print:
+            print("[AABS] 1. adjust bs in tl_load")
+        for bs_name, ts_name in load_map.items():
+            adjust_block_size_tl_load(nargs, current, config, bs_name, ts_name)
+
+    if tma_map:
+        if knobs.autotuning.print:
+            print("[AABS] 2. adjust bs in tma")
+        for desc_name, bs_names_set in tma_map.items():
+            for bs_names in bs_names_set:
+                adjust_block_size_tma(nargs, current, config, desc_name, bs_names)
+        adjust_block_size_dot_k_dim(nargs, current, config, bs_k_map, 16)
+        adjust_block_size_dot_m_dim(nargs, current, config, bs_k_map, bs_m_map, 128)
+
+    if knobs.autotuning.print:
+        nargs_str = ''
+        if nargs:
+            import torch
+            from triton.tools.tensor_descriptor import TensorDescriptor
+            nargs_parts = []
+            for k, v in nargs.items():
+                if isinstance(v, (torch.Tensor, TensorDescriptor)):
+                    nargs_parts.append(k)
+                else:
+                    nargs_parts.append(f'{k}={v}')
+            nargs_str = ', '.join(nargs_parts)
+        base_fn = fn
+        while not inspect.isfunction(base_fn):
+            base_fn = base_fn.fn
+        print(f'[AABS] ==== Finish: {base_fn.__name__}({nargs_str})')
+        print(f'[AABS] ====         adjusted_config={config}')
