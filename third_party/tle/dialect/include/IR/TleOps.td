@@ -18,15 +18,32 @@ class Tle_Op<string mnemonic, list<Trait> traits = []> :
 }
 
 // Begin TLE-Lite
+def Tle_ExtractTileOp : Tle_Op<"extract_tile", [Pure]> {
+  let summary = "Extract a tile from a tensor with static offsets";
 
-def Tle_ExtractTileOp : Tle_Op<"extract_tile", [Pure,
-                                               SameOperandsAndResultElementType]> {
-  let arguments = (ins TT_Tensor:$src, TT_IntLike:$index);
+  let description = [{
+    Extract a contiguous tile from a tensor based on static offsets.
+    This is a zero-cost operation at runtime - it only reorganizes
+    register values within each thread, with no inter-thread communication.
+
+    Requirements:
+      1. Offsets must be multiples of CTA tile sizes
+      2. Tile shape must be multiples of CTA tile sizes
+      3. Source and destination layouts must match at CTA tile level
+  }];
+
+  let arguments = (ins 
+    TT_Tensor:$src,
+    TT_IntLike:$index
+  );
+
   let results = (outs TT_Tensor:$result);
+  let builders = [OpBuilder<(ins "Value":$src,"Value":$index,"ArrayRef<int64_t>":$tileShape)>];
   let assemblyFormat = [{
     $src `[` $index `]` attr-dict `:` qualified(type($src)) `,` qualified(type($index)) `->` qualified(type($result))
   }];
-  let builders = [OpBuilder<(ins "Value":$src, "Value":$index, "ArrayRef<int64_t>":$tile_shape)>];
+
+  let hasVerifier = 1;
 }
 
 def Tle_InsertTileOp : Tle_Op<"insert_tile", [Pure,

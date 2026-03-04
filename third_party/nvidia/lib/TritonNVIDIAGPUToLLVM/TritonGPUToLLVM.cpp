@@ -33,6 +33,8 @@
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 
+#include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
+
 namespace mlir {
 namespace triton {
 #define GEN_PASS_DEF_CONVERTTRITONGPUTOLLVM
@@ -149,6 +151,7 @@ struct ConvertTritonGPUToLLVM
                                                          patterns, benefit);
       mlir::triton::tle::populatePackOpToLLVMPatterns(typeConverter, patterns,
                                                       benefit);
+      mlir::triton::tle::populateExtractTileOpToLLVMPatterns(typeConverter, patterns, benefit);
       if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
         return signalPassFailure();
       }
