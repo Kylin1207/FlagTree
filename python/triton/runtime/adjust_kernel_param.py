@@ -1,7 +1,6 @@
 import ast
 import inspect
-from typing import Any, Dict, Set, Optional, Tuple, List
-from functools import lru_cache
+from typing import Dict, Set, Optional, Tuple, List
 from triton import knobs
 
 
@@ -43,7 +42,7 @@ class VariableCollector(ast.NodeVisitor):
 class KernelDependencyAnalyzer(ast.NodeVisitor):
 
     def __init__(self):
-        self.input_params: Set[str] = set[str]()      # input params
+        self.input_params: Set[str] = set[str]()  # input params
         self.constexpr_params: Set[str] = set[str]()  # constexpr params
         self.var_definitions: Dict[str, ast.AST] = {}  # var -> latest definition node
         # for input-constexpr dependencies analyze
@@ -72,7 +71,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 if not ann_str:
                     try:
                         ann_str = ast.dump(arg.annotation)
-                    except:
+                    except Exception:
                         ann_str = ''  # Python 3.8 fallback
                 if 'constexpr' in ann_str:
                     self.constexpr_params.add(arg_name)
@@ -86,21 +85,15 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             var_name = targets[0].id
 
             # Capture desc.load([addr, ...]) assignments
-            if (isinstance(node.value, ast.Call) and
-                self._is_tma_load(node.value) and
-                node.value.args and
-                isinstance(node.value.args[0], ast.List)):
+            if (isinstance(node.value, ast.Call) and self._is_tma_load(node.value) and node.value.args
+                    and isinstance(node.value.args[0], ast.List)):
                 tma_desc_name = node.value.func.value.id
                 addr_exprs = node.value.args[0].elts
-                self.tma_load_assignments.append({
-                    'var_name': var_name,
-                    'tma_desc_name': tma_desc_name,
-                    'addr_exprs': addr_exprs
-                })
+                self.tma_load_assignments.append(
+                    {'var_name': var_name, 'tma_desc_name': tma_desc_name, 'addr_exprs': addr_exprs})
 
             # TMA device: record LHS name + shape/block_shape from make_tensor_descriptor
-            if (isinstance(node.value, ast.Call) and
-                    self._is_tl_make_tensor_descriptor(node.value)):
+            if (isinstance(node.value, ast.Call) and self._is_tl_make_tensor_descriptor(node.value)):
                 shape_names = []
                 block_names = []
                 for kw in node.value.keywords:
@@ -143,7 +136,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 if not ann_str:
                     try:
                         ann_str = ast.dump(node.annotation)
-                    except:
+                    except Exception:
                         ann_str = ''
                 if 'constexpr' in ann_str:
                     self.constexpr_params.add(var_name)
@@ -317,7 +310,6 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     constexpr_deps.update(sub_constexprs)
         return input_deps, constexpr_deps
 
-
     def _get_dependencies_vars(self, var_name: str, visited: Optional[Set[str]] = None) -> Set[str]:
         if visited is None:
             visited = set[str]()
@@ -341,7 +333,6 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     var_deps.update(self._get_dependencies_vars(used_var, visited.copy()))
         return var_deps
 
-
     def analyze_dot_dim(self) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
         """
         Find the BLOCK constexpr vars corresponding to M and K dims in tl.dot(a, b).
@@ -354,9 +345,9 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         - Cross-check: last dim of a must equal first dim of b; inconsistency -> return empty maps.
 
         Returns:
-            (block_m_map, block_k_map):
-              block_m_map: {BLOCK_M name -> set of tensor/desc param names using that M dim}
-              block_k_map: {BLOCK_K name -> set of tensor/desc param names using that K dim}
+            (bs_m_map, bs_k_map):
+              bs_m_map: {BLOCK_M name -> set of tensor/desc param names using that M dim}
+              bs_k_map: {BLOCK_K name -> set of tensor/desc param names using that K dim}
         """
         # Step 1: map each desc.load target var to its (desc_name, [block_names]) from desc.block_shape
         desc_block_shapes = getattr(self, "_desc_block_shapes", {})
@@ -371,9 +362,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         # e.g. a = tl.trans(a_t) -> a's block shape = a_t's block shape with last two dims swapped
         var_block_shape: Dict[str, tuple] = dict[str, tuple](raw_var_block_shape)
         for var_name, def_node in self.var_definitions.items():
-            if (isinstance(def_node, ast.Call) and
-                    self._is_tl_transpose(def_node) and
-                    def_node.args):
+            if (isinstance(def_node, ast.Call) and self._is_tl_transpose(def_node) and def_node.args):
                 src_vars = VariableCollector.collect(def_node.args[0])
                 for src_var in src_vars:
                     if src_var in raw_var_block_shape:
@@ -388,8 +377,8 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         # tl.dot(a, b): a is (M, K), b is (K, N).
         # K is the last dim of a (operand order); no need to compare with b's first dim for
         # determination, but still cross-check for consistency (avoid M=N confusion).
-        block_m_map: Dict[str, Set[str]] = {}
-        block_k_map: Dict[str, Set[str]] = {}
+        bs_m_map: Dict[str, Set[str]] = {}
+        bs_k_map: Dict[str, Set[str]] = {}
         has_inconsistent = False
         for dot_node in self.dot_calls:
             args = dot_node.args
@@ -404,57 +393,54 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             # First operand a: shape (M, K); M = first dim, K = last dim
             for a_var in VariableCollector.collect(args[0]):
                 if a_var in var_block_shape:
-                    a_desc_name, a_block_list = var_block_shape[a_var]
-                    if a_block_list:
+                    a_desc_name, a_bs_names = var_block_shape[a_var]
+                    if a_bs_names:
                         # M dim block name: first dim of a
-                        m_from_a = a_block_list[0]
+                        m_from_a = a_bs_names[0]
                         # Resolve desc var to real tensor param (host: a_desc; device: A)
                         a_tensor_param_for_m = self._resolve_tensor_param(a_desc_name)
                         if m_from_a is not None and a_tensor_param_for_m is not None:
-                            if m_from_a not in block_m_map:
-                                block_m_map[m_from_a] = set[str]()
-                            block_m_map[m_from_a].add(a_tensor_param_for_m)
+                            if m_from_a not in bs_m_map:
+                                bs_m_map[m_from_a] = set[str]()
+                            bs_m_map[m_from_a].add(a_tensor_param_for_m)
                         # K dim block name: last dim of a
-                        k_from_a = a_block_list[-1]
+                        k_from_a = a_bs_names[-1]
                     break
 
             # Second operand b: shape (K, N); K = first dim (for cross-check only)
             for b_var in VariableCollector.collect(args[1]):
                 if b_var in var_block_shape:
-                    b_desc_name, b_block_list = var_block_shape[b_var]
-                    if b_block_list:
-                        k_from_b = b_block_list[0]
+                    b_desc_name, b_bs_names = var_block_shape[b_var]
+                    if b_bs_names:
+                        k_from_b = b_bs_names[0]
                     break
 
             # K is determined by operand order (last dim of a).
             # Cross-check with b's first dim; if both resolved and differ, mark inconsistent.
-            k_block = k_from_a if k_from_a is not None else k_from_b
+            bs_k_name = k_from_a if k_from_a is not None else k_from_b
 
-            if (k_from_a is not None
-                    and k_from_b is not None
-                    and k_from_a != k_from_b):
+            if (k_from_a is not None and k_from_b is not None and k_from_a != k_from_b):
                 has_inconsistent = True
 
             # Resolve desc names to real tensor param names
             a_tensor_param = self._resolve_tensor_param(a_desc_name)
             b_tensor_param = self._resolve_tensor_param(b_desc_name)
 
-            if k_block is not None:
+            if bs_k_name is not None:
                 # K dim is associated with both a and b tensor params
                 if a_tensor_param is not None:
-                    if k_block not in block_k_map:
-                        block_k_map[k_block] = set[str]()
-                    block_k_map[k_block].add(a_tensor_param)
+                    if bs_k_name not in bs_k_map:
+                        bs_k_map[bs_k_name] = set[str]()
+                    bs_k_map[bs_k_name].add(a_tensor_param)
                 if b_tensor_param is not None:
-                    if k_block not in block_k_map:
-                        block_k_map[k_block] = set[str]()
-                    block_k_map[k_block].add(b_tensor_param)
+                    if bs_k_name not in bs_k_map:
+                        bs_k_map[bs_k_name] = set[str]()
+                    bs_k_map[bs_k_name].add(b_tensor_param)
 
         # If any tl.dot has inconsistent K-dim inference, analysis is unreliable; return empty.
         if has_inconsistent:
             return {}, {}
-        return block_m_map, block_k_map
-
+        return bs_m_map, bs_k_map
 
     # ---------- Analyzer 1: tl.load only - infer dim->BLOCK via tl.arange ----------
     def analyze_tl_load_dim_to_bs(self) -> Dict[str, str]:
@@ -518,8 +504,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         return hook_desc_block
 
     def analyze_desc_load_dim_to_bs(
-        self, pre_hook_fn: Optional[object] = None
-    ) -> Tuple[Dict[str, Set[Tuple[str, ...]]], Dict[str, List[str]]]:
+            self, pre_hook_fn: Optional[object] = None) -> Tuple[Dict[str, Set[Tuple[str, ...]]], Dict[str, List[str]]]:
         """
         For desc.load only (TMA device / host): infer BLOCK sizes from desc.block_shape.
 
@@ -529,7 +514,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
         Returns:
           tma_map: autotuner-compatible { desc_name: set of (block_name, ...) }
-          desc_block_shapes: { desc_name: [block_name, ...] } (also stored as self._desc_block_shapes for analyze_dot_dim)
+          Stored { desc_name: [block_name, ...] } as self._desc_block_shapes for analyze_dot_dim
         """
         # 1) Build desc -> block_shape from make_tensor_descriptor definitions
         desc_block_shapes: Dict[str, List[str]] = {}
@@ -573,7 +558,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 tma_map.setdefault(desc_name, set()).add(tuple(block_list))
         # Store for use by analyze_dot_dim
         self._desc_block_shapes: Dict[str, List[str]] = desc_block_shapes
-        return tma_map, desc_block_shapes
+        return tma_map
 
 
 _analysis_cache: Dict[int, Tuple] = {}
@@ -603,7 +588,7 @@ def analyze_kernel_dependencies(jit_fn, pre_hook_fn: Optional[object] = None) ->
         load_map = analyzer.analyze_tl_load_dim_to_bs()
 
         # Analyzer 2: desc.load - infer BLOCK from desc.block_shape; writes _desc_block_shapes for dot analysis
-        tma_map, _ = analyzer.analyze_desc_load_dim_to_bs(pre_hook_fn=pre_hook_fn)
+        tma_map = analyzer.analyze_desc_load_dim_to_bs(pre_hook_fn=pre_hook_fn)
 
         # tl.dot M/K dim mapping (uses _desc_block_shapes internally)
         bs_m_map, bs_k_map = analyzer.analyze_dot_dim()
@@ -612,18 +597,22 @@ def analyze_kernel_dependencies(jit_fn, pre_hook_fn: Optional[object] = None) ->
 
         if knobs.autotuning.print:
             if load_map:
-                print(f"\n=== FlagTree adjust_kernel_param tl.load (by tl.arange): {getattr(jit_fn, '__name__', 'unknown')} ===")
+                print(
+                    f"\n=== FlagTree adjust_kernel_param tl.load (by tl.arange): {getattr(jit_fn, '__name__', 'unknown')} ==="
+                )
                 for bs_name, ts_name in load_map.items():
-                    print(f"  block '{bs_name}' -> dim '{ts_name}'")
+                    print(f"  load_map[bs_name, ts_name]: '{bs_name}' -> '{ts_name}'")
             if tma_map:
-                print(f"\n=== FlagTree adjust_kernel_param desc.load (by block_shape): {getattr(jit_fn, '__name__', 'unknown')} ===")
+                print(
+                    f"\n=== FlagTree adjust_kernel_param desc.load (by block_shape): {getattr(jit_fn, '__name__', 'unknown')} ==="
+                )
                 for desc_name, bs_names_set in tma_map.items():
-                    print(f"  desc '{desc_name}' -> block shapes {bs_names_set}")
+                    print(f"  tma_map[desc_name, set[block_shapes]]: '{desc_name}' -> {bs_names_set}")
             if bs_m_map or bs_k_map:
                 print(f"\n=== FlagTree adjust_kernel_param tl.dot: {getattr(jit_fn, '__name__', 'unknown')} ===")
-                print(f"  BLOCK_M -> params: {bs_m_map}")
-                print(f"  BLOCK_K -> params: {bs_k_map}")
-            print("================================================\n")
+                print(f"  bs_m_map[bs_name, set[param_name]]: {bs_m_map}")
+                print(f"  bs_k_map[bs_name, set[param_name]]: {bs_k_map}")
+            print("==============================================================\n")
 
         return (load_map, tma_map, bs_m_map, bs_k_map)
 
@@ -640,6 +629,7 @@ def clear_analysis_cache():
 # Block-size adjustment helpers (used by Autotuner._auto_adjust_block_sizes)
 # =====================================================================
 
+
 def update_bs(nargs, current, config, bs_name, bs, title, reason):
     if knobs.autotuning.print:
         print(f'[AABS] {title}: adjust {bs_name} {current[bs_name]} => {bs} because {bs_name} {reason}')
@@ -654,10 +644,9 @@ def adjust_block_size_tl_load(nargs, current, config, bs_name, ts_name):
     ts = nargs[ts_name]
     if not isinstance(bs, int) or not isinstance(ts, int):
         return
-    if bs > ts:    # block_size > tensor_size
+    if bs > ts:  # block_size > tensor_size
         from triton import next_power_of_2
-        update_bs(nargs, current, config, bs_name, next_power_of_2(ts),
-                  "tl.load", f"> {ts}")
+        update_bs(nargs, current, config, bs_name, next_power_of_2(ts), "tl.load", f"> {ts}")
 
 
 def adjust_block_size_tma(nargs, current, config, desc_name, bs_names):
@@ -673,15 +662,16 @@ def adjust_block_size_tma(nargs, current, config, desc_name, bs_names):
         return
     if len(desc_base.shape) != len(bs_names):
         if knobs.autotuning.print:
-            print(f"[AABS] Warning: len(desc_base.shape)={len(desc_base.shape)} != {len(bs_names)}=len(bs_names), bs_names={bs_names}")
+            print(
+                f"[AABS] Warning: len(desc_base.shape)={len(desc_base.shape)} != {len(bs_names)}=len(bs_names), bs_names={bs_names}"
+            )
         return
     for shape_size, bs_name in zip(desc_base.shape, bs_names):
         bs = current[bs_name]
         if not isinstance(shape_size, int) or not isinstance(bs, int):
             continue
         if bs > shape_size:
-            update_bs(nargs, current, config, bs_name, next_power_of_2(shape_size),
-                      "TMA", f"> {shape_size}")
+            update_bs(nargs, current, config, bs_name, next_power_of_2(shape_size), "TMA", f"> {shape_size}")
 
 
 def adjust_block_size_dot_k_dim(nargs, current, config, bs_k_map, limit):
@@ -692,8 +682,7 @@ def adjust_block_size_dot_k_dim(nargs, current, config, bs_k_map, limit):
         if not isinstance(bs, int):
             continue
         if bs < limit:
-            update_bs(nargs, current, config, bs_name, limit,
-                      "tl.dot", f"< {limit}=limit_k")
+            update_bs(nargs, current, config, bs_name, limit, "tl.dot", f"< {limit}=limit_k")
 
 
 def adjust_block_size_dot_m_dim(nargs, current, config, bs_k_map, bs_m_map, limit_bytes):
@@ -701,9 +690,9 @@ def adjust_block_size_dot_m_dim(nargs, current, config, bs_k_map, bs_m_map, limi
     from triton.tools.tensor_descriptor import TensorDescriptor
 
     bs_k = 1
-    for k_name in bs_k_map.keys():
-        if k_name in current and isinstance(current[k_name], int):
-            bs_k = current[k_name]
+    for bs_k_name in bs_k_map.keys():
+        if bs_k_name in current and isinstance(current[bs_k_name], int):
+            bs_k = current[bs_k_name]
             break
 
     for bs_name, param_names in bs_m_map.items():
@@ -731,8 +720,7 @@ def adjust_block_size_dot_m_dim(nargs, current, config, bs_k_map, bs_m_map, limi
         # SWIZZLE_128B: bs_k * elem_type_size = 128B, limit = 1
         limit = max(int(limit_bytes / bs_k / elem_type_size), 1)
         if bs < limit:
-            update_bs(nargs, current, config, bs_name, limit,
-                      "tl.dot", f"< {limit}=limit_m")
+            update_bs(nargs, current, config, bs_name, limit, "tl.dot", f"< {limit}=limit_m")
 
 
 def auto_adjust_block_sizes(nargs, fn, configs, current, config):

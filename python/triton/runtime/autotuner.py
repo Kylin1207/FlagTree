@@ -5,9 +5,8 @@ import time
 import inspect
 import hashlib
 import json
-import math
 from functools import cached_property
-from typing import Any, Dict, Tuple, List, Optional
+from typing import Dict, Tuple, List, Optional
 
 from .. import knobs
 from .jit import KernelInterface, JITFunction
@@ -127,7 +126,6 @@ class Autotuner(KernelInterface):
         if self._do_bench is None:
             return driver.active.get_benchmarker()
         return self._do_bench
-
 
     def _bench(self, *args, config, **meta):
         from ..compiler.errors import CompileTimeAssertionFailure
