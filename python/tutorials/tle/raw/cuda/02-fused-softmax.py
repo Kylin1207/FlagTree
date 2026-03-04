@@ -1,15 +1,12 @@
-from typing_extensions import Literal as L
 from pathlib import Path
-import pdb
-from mlir import ir
-from mlir.dialects import arith, math, memref, nvvm, scf
 import torch
 import triton
 import triton.language as tl
-from triton.experimental.tle.raw import dialect, InOut, Input
+from triton.experimental.tle.raw import dialect
 import triton.experimental.tle.language.raw as tle_raw
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
+
 
 @dialect(name="cuda", file=Path(__file__).parent / "02-fused-softmax.cu")
 def edsl(*args, **kwargs):
@@ -23,6 +20,7 @@ def naive_softmax(x):
     denominator = numerator.sum(dim=1)
     ret = numerator / denominator[:, None]
     return ret
+
 
 @triton.jit
 def softmax_kernel(output_ptr, input_ptr, input_row_stride, output_row_stride, n_rows, n_cols,
