@@ -102,6 +102,7 @@ SmallVector<Value> createTLERawCall(TritonOpBuilder &self,
   SmallVector<Value> finalResults;
   tgts = ValueRange(outs).getTypes();
   for (Value result : callOp.getResults()) {
+    llvm::outs() << "LLVM call result: " << result.getType() << "\n";
     SmallVector<Value> rets =
         tle::protocol::ReturnPattern::apply(self, tgts, result);
     finalResults.append(std::move(rets));

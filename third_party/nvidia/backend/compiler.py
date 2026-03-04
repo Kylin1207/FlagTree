@@ -393,7 +393,9 @@ class CUDABackend(BaseBackend):
         if knobs.compilation.enable_asan:
             raise RuntimeError(
                 "Address Sanitizer Error: Address sanitizer is currently only supported on the AMD backend")
+        print(f"llvm_MOD:{mod}")
         llvm_mod = llvm.to_module(mod, context)
+        print(f"llvm_MOD:{llvm_mod}")
         proc = sm_arch_from_capability(capability)
         features = get_features(options, self.target.arch)
         triple = 'nvptx64-nvidia-cuda'

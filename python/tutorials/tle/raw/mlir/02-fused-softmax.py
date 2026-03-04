@@ -66,42 +66,42 @@ def edsl(y: InOut[L["memref<?xf32, 3>"]], x: Input[L["memref<?xf32, 3>"]]):
         val = math.exp(val)
         memref.store(val, y, [i])
         scf.yield_([])
-    whileop = scf.while_(
-        [ir.IndexType.get()],
-        [length],
-    )
-    condblock = whileop.owner.opview.before.blocks.append(ir.IndexType.get())
-    doblock = whileop.owner.opview.after.blocks.append(ir.IndexType.get())
-    with ir.InsertionPoint(condblock):
-        [init] = condblock.arguments
-        cond = arith.cmpi(arith.CmpIPredicate.sgt, init, arith.constant(ir.IndexType.get(), 1))
-        scf.condition(cond, [init])
-    with ir.InsertionPoint(doblock):
-        [init] = doblock.arguments
-        half = arith.divsi(init, arith.constant(ir.IndexType.get(), 2))
-        for i in scf.for_(tidx, half, bdimx):
-            ok = arith.cmpi(arith.CmpIPredicate.slt, i, half)
-            ifop = scf.if_([], ok)
-            then = ifop.opview.thenRegion.blocks.append()
-            with ir.InsertionPoint(then):
-                left = tidx
-                right = arith.addi(tidx, half)
-                left_val = memref.load(y, [left])
-                right_val = memref.load(y, [right])
-                sum_val = arith.addf(left_val, right_val)
-                memref.store(sum_val, y, [left])
-                scf.yield_([])
-            scf.yield_([])
-        nvvm.barrier0()
-        scf.yield_([half])
-    sum_val = memref.load(y, [arith.constant(ir.IndexType.get(), 0)])
-    for i in scf.for_(tidx, length, bdimx):
-        val = memref.load(x, [i])
-        val = arith.subf(val, max_val)
-        val = math.exp(val)
-        val = arith.divf(val, sum_val)
-        memref.store(val, y, [i])
-        scf.yield_([])
+    # whileop = scf.while_(
+    #     [ir.IndexType.get()],
+    #     [length],
+    # )
+    # condblock = whileop.owner.opview.before.blocks.append(ir.IndexType.get())
+    # doblock = whileop.owner.opview.after.blocks.append(ir.IndexType.get())
+    # with ir.InsertionPoint(condblock):
+    #     [init] = condblock.arguments
+    #     cond = arith.cmpi(arith.CmpIPredicate.sgt, init, arith.constant(ir.IndexType.get(), 1))
+    #     scf.condition(cond, [init])
+    # with ir.InsertionPoint(doblock):
+    #     [init] = doblock.arguments
+    #     half = arith.divsi(init, arith.constant(ir.IndexType.get(), 2))
+    #     for i in scf.for_(tidx, half, bdimx):
+    #         ok = arith.cmpi(arith.CmpIPredicate.slt, i, half)
+    #         ifop = scf.if_([], ok)
+    #         then = ifop.opview.thenRegion.blocks.append()
+    #         with ir.InsertionPoint(then):
+    #             left = tidx
+    #             right = arith.addi(tidx, half)
+    #             left_val = memref.load(y, [left])
+    #             right_val = memref.load(y, [right])
+    #             sum_val = arith.addf(left_val, right_val)
+    #             memref.store(sum_val, y, [left])
+    #             scf.yield_([])
+    #         scf.yield_([])
+    #     nvvm.barrier0()
+    #     scf.yield_([half])
+    # sum_val = memref.load(y, [arith.constant(ir.IndexType.get(), 0)])
+    # for i in scf.for_(tidx, length, bdimx):
+    #     val = memref.load(x, [i])
+    #     val = arith.subf(val, max_val)
+    #     val = math.exp(val)
+    #     val = arith.divf(val, sum_val)
+    #     memref.store(val, y, [i])
+    #     scf.yield_([])
 
 
 @triton.jit
