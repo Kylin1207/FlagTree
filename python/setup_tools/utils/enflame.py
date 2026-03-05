@@ -4,10 +4,11 @@ import sys
 from pathlib import Path
 
 # Add parent directories to path to import build_helpers
+from build_helpers import get_cmake_dir
+
 current_dir = Path(__file__).parent
 python_dir = current_dir.parent.parent
 sys.path.insert(0, str(python_dir))
-from build_helpers import get_cmake_dir
 
 
 def get_package_data_tools():
