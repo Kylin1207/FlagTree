@@ -5,9 +5,9 @@
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 
-#include "Utility.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
+#include "Utility.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -46,8 +46,8 @@ struct TritonGCULayoutOptimizePass
   using Base::Base;
 
   void runOnOperation() override;
-//   void RefineGcuLoadStoreLayout();
-//   void reWriteGcuStoreLayout(triton::gcu::StoreOp store);
+  //   void RefineGcuLoadStoreLayout();
+  //   void reWriteGcuStoreLayout(triton::gcu::StoreOp store);
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
         .insert<arith::ArithDialect, memref::MemRefDialect,

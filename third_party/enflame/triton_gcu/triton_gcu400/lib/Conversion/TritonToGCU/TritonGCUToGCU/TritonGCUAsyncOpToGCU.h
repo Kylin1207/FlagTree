@@ -17,25 +17,25 @@
 #ifndef KURAMA_TRITONGCUASYNC_TO_GCU_H_
 #define KURAMA_TRITONGCUASYNC_TO_GCU_H_
 
-#include "TritionToGCUBase.h"
 #include "Conversion/TritonToGCU/Utility.h"
+#include "TritionToGCUBase.h"
 
 #include <map>
 
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
-#include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/MathExt/IR/MathExt.h"
 #include "Dialect/MathExt/IR/MathExtTypes.h"
+#include "Dialect/MemrefExt/IR/MemrefExt.h"
 
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
-#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
@@ -95,9 +95,8 @@ void getPipelineAsyncResourceMaping(
               auto shareAllocOp = subView.getSrc().getDefiningOp();
               if (!shareAllocOp ||
                   !isa<triton::gcu::BufferAllocOp>(shareAllocOp)) {
-                assert(false &&
-                       " MemDescSubsliceOp's src should be a "
-                       "BufferAllocOp op!");
+                assert(false && " MemDescSubsliceOp's src should be a "
+                                "BufferAllocOp op!");
               }
               asyncLoad2Tag[operation] = shareAlloc2Tags[shareAllocOp];
               auto opOffsets = subView.getOffsets();
@@ -136,8 +135,8 @@ void getPipelineAsyncResourceMaping(
   });
 }
 
-struct TTBufferAllocOpLowering :
-    SharedConversionPattern<triton::gcu::BufferAllocOp> {
+struct TTBufferAllocOpLowering
+    : SharedConversionPattern<triton::gcu::BufferAllocOp> {
   using SharedConversionPattern::SharedConversionPattern;
 
   LogicalResult
@@ -193,8 +192,7 @@ struct TTLocalLoadOpLowering
 inline Value dot(RewriterBase &rewriter, Location loc, ArrayRef<Value> offsets,
                  ArrayRef<Value> strides) {
   assert(offsets.size() == strides.size());
-  Value ret =
-      rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
+  Value ret = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
   for (auto [offset, stride] : llvm::zip(offsets, strides)) {
     ret = rewriter.create<arith::AddIOp>(
         loc, ret, rewriter.create<arith::MulIOp>(loc, offset, stride));
@@ -225,8 +223,8 @@ struct TTMemDescSubsliceOpLowering
     auto opOffsets = subview.getOffsets();
     SmallVector<Value> opOffsetVals;
     for (long int offset : opOffsets) {
-      opOffsetVals.push_back(rewriter.create<arith::ConstantIntOp>(
-          loc, offset, 32));
+      opOffsetVals.push_back(
+          rewriter.create<arith::ConstantIntOp>(loc, offset, 32));
     }
     assert((opOffsetVals.size() == strides.size()) &&
            "offset size is not equal to stride size !!!");
@@ -239,8 +237,8 @@ struct TTMemDescSubsliceOpLowering
       if (i > 0) {
         strideVals.push_back(rewriter.getIndexAttr(strides[i]));
       }
-      strideValues.push_back(rewriter.create<arith::ConstantIntOp>(
-          loc, strides[i], 32));
+      strideValues.push_back(
+          rewriter.create<arith::ConstantIntOp>(loc, strides[i], 32));
     }
 
     auto finalOffsetValue = dot(rewriter, loc, opOffsetVals, strideValues);
@@ -293,7 +291,7 @@ struct TTAsyncLoadFromGlobalOpLowering
   explicit TTAsyncLoadFromGlobalOpLowering(
       const TypeConverter &converter, MLIRContext *ctx,
       triton::gcu::FirstLastUserAnalysis &userAnalysis,
-      std::map<Operation*, Operation*>& replaced2Origin,
+      std::map<Operation *, Operation *> &replaced2Origin,
       triton::gcu::PrivateTagPool &pTagPool,
       std::map<Operation *, Operation *> &inAsyncLoad2Tags,
       llvm::DenseMap<Operation *, Value> &inAsyncLoad2Tagidex)
@@ -398,17 +396,17 @@ struct TTAsyncLoadFromGlobalOpLowering
                                   asyncLoad2Tagidex[asyncLoad.getOperation()])
                               .getResult();
             builder.create<scf::IfOp>(
-              loc, isThread0, [&](OpBuilder &builder, Location loc) {
-                ConfigGcuLoad(
-                  builder, loc, pTagPool, adaptor.getDstMem(),
-                  asyncLoad.getOperation(), outputType, adaptor.getPtr(),
-                  adaptor.getStrides(), adaptor.getShape(), defaultValue,
-                  triton::gcu::TagInfo(
-                       asyncLoad2Tag[asyncLoad.getOperation()]->getResult(0),
-                       tagIdx, true),
-                  true);
-              builder.create<scf::YieldOp>(loc);
-            });
+                loc, isThread0, [&](OpBuilder &builder, Location loc) {
+                  ConfigGcuLoad(
+                      builder, loc, pTagPool, adaptor.getDstMem(),
+                      asyncLoad.getOperation(), outputType, adaptor.getPtr(),
+                      adaptor.getStrides(), adaptor.getShape(), defaultValue,
+                      triton::gcu::TagInfo(
+                          asyncLoad2Tag[asyncLoad.getOperation()]->getResult(0),
+                          tagIdx, true),
+                      true);
+                  builder.create<scf::YieldOp>(loc);
+                });
             builder.create<scf::YieldOp>(loc);
           });
       leaveTritionOp(rewriter, asyncLoad.getOperation());
@@ -433,13 +431,13 @@ struct TTAsyncLoadFromGlobalOpLowering
     rewriter.create<scf::IfOp>(
         loc, isThread0, [&](OpBuilder &builder, Location loc) {
           ConfigGcuLoad(
-            builder, loc, pTagPool, adaptor.getDstMem(),
-            asyncLoad.getOperation(), outputType, adaptor.getPtr(),
-            adaptor.getStrides(), adaptor.getShape(), defaultValue,
-            triton::gcu::TagInfo(
-                asyncLoad2Tag[asyncLoad.getOperation()]->getResult(0),
-                tagIdx, true),
-            true);
+              builder, loc, pTagPool, adaptor.getDstMem(),
+              asyncLoad.getOperation(), outputType, adaptor.getPtr(),
+              adaptor.getStrides(), adaptor.getShape(), defaultValue,
+              triton::gcu::TagInfo(
+                  asyncLoad2Tag[asyncLoad.getOperation()]->getResult(0), tagIdx,
+                  true),
+              true);
           builder.create<scf::YieldOp>(loc);
         });
     leaveTritionOp(rewriter, asyncLoad.getOperation());
@@ -448,19 +446,19 @@ struct TTAsyncLoadFromGlobalOpLowering
   }
 };
 
-struct TTAsyncWaitOpLowering :
-    SharedConversionPattern<triton::gcu::AsyncWaitOp> {
+struct TTAsyncWaitOpLowering
+    : SharedConversionPattern<triton::gcu::AsyncWaitOp> {
   using SharedConversionPattern::SharedConversionPattern;
   std::map<Operation *, Operation *> &asyncWait2Tag;
 
   explicit TTAsyncWaitOpLowering(
       const TypeConverter &converter, MLIRContext *ctx,
       triton::gcu::FirstLastUserAnalysis &userAnalysis,
-      std::map<Operation*, Operation*>& replaced2Origin,
+      std::map<Operation *, Operation *> &replaced2Origin,
       triton::gcu::PrivateTagPool &pTagPool,
       std::map<Operation *, Operation *> &inAsyncWait2Tag)
       : SharedConversionPattern<triton::gcu::AsyncWaitOp>(
-          converter, ctx, userAnalysis, replaced2Origin, pTagPool),
+            converter, ctx, userAnalysis, replaced2Origin, pTagPool),
         asyncWait2Tag(inAsyncWait2Tag) {}
 
   LogicalResult

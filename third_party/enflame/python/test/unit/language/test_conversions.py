@@ -345,23 +345,23 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
 #        if dst_dtype in ('float8e5b16', 'float8e4b8') and rounding == 'rtne':
 #            pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on AMDGPU CDNA3")
 
- #   if is_hip():
- #       if dst_dtype in ('float8e4b8', 'float8e5b16') and (is_hip_cdna2() or is_hip_gfx12()):
- #           pytest.skip(f"{dst_dtype} is not supported on AMDGPU CDNA2 and RDNA4")
+#   if is_hip():
+#       if dst_dtype in ('float8e4b8', 'float8e5b16') and (is_hip_cdna2() or is_hip_gfx12()):
+#           pytest.skip(f"{dst_dtype} is not supported on AMDGPU CDNA2 and RDNA4")
 
- #   # dtype : (exponent_bits, mantissa_bits, exponent_bias)
- #   stuff = {
- #       'float16': (5, 10, 15),
- #       'bfloat16': (8, 7, 127),
- #       'float8e5': (5, 2, 15),
- #       'float8e4b15': (4, 3, 15),
- #       'float8e4nv': (4, 3, 7),
- #       'float8e4b8': (4, 3, 8),
- #       'float8e5b16': (5, 2, 16),
- #   }[dst_dtype]
+#   # dtype : (exponent_bits, mantissa_bits, exponent_bias)
+#   stuff = {
+#       'float16': (5, 10, 15),
+#       'bfloat16': (8, 7, 127),
+#       'float8e5': (5, 2, 15),
+#       'float8e4b15': (4, 3, 15),
+#       'float8e4nv': (4, 3, 7),
+#       'float8e4b8': (4, 3, 8),
+#       'float8e5b16': (5, 2, 16),
+#   }[dst_dtype]
 
- #   for i in range(256):
- #       downcast_test(getattr(tl, src_dtype), getattr(tl, dst_dtype), rounding, *stuff, max_repr, i, device=device)
+#   for i in range(256):
+#       downcast_test(getattr(tl, src_dtype), getattr(tl, dst_dtype), rounding, *stuff, max_repr, i, device=device)
 
 # TODO
 #@pytest.mark.parametrize("mode", [

@@ -25,28 +25,26 @@
 #include "Analysis/FirstLastUserAnalysis.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
-#include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/MathExt/IR/MathExt.h"
 #include "Dialect/MathExt/IR/MathExtTypes.h"
+#include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/Builders.h"
-#include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/Support/LLVM.h"
-#include "mlir/Support/LogicalResult.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/AffineMap.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypeInterfaces.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/MLIRContext.h"
@@ -54,25 +52,26 @@
 #include "mlir/IR/ValueRange.h"
 #include "mlir/IR/Visitors.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "llvm/ADT/APFloat.h"
-#include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/TypeSwitch.h"
-#include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/MathExtras.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "triton-ir-to-gcu-ir-util"
 #define DBG_TRITON_IR 1
 
 namespace mlir {
-
 
 Value getPrivateDTETag(OpBuilder &builder, Operation *op) {
   OpBuilder::InsertionGuard guard(builder);
@@ -360,9 +359,7 @@ void doSlicePadOrMemsetSlice(OpBuilder &rewriter, Location loc,
                              Value defaultValue, triton::gcu::TagInfo tag) {
   auto maxPadSize = rewriter.create<arith::ConstantIndexOp>(loc, 2047);
   auto outputType = dyn_cast<MemRefType>(output.getType());
-  auto legalPad =
-      rewriter.create<arith::ConstantIntOp>(loc, 1, 1)
-          .getResult();
+  auto legalPad = rewriter.create<arith::ConstantIntOp>(loc, 1, 1).getResult();
   unsigned totalNumElems = 1;
   for (int i = 0; i < outputType.getRank(); i++) {
     totalNumElems *= outputType.getShape()[i];
@@ -375,16 +372,16 @@ void doSlicePadOrMemsetSlice(OpBuilder &rewriter, Location loc,
       loc, legalPad,
       [&](OpBuilder &builder, Location loc) {
         builder.create<memref_ext::SlicePadStartOp>(
-            loc, output, src, offsets, sliceShape, defaultValue,
-            tag.getTag(), ValueRange{tag.getIdx()});
+            loc, output, src, offsets, sliceShape, defaultValue, tag.getTag(),
+            ValueRange{tag.getIdx()});
         builder.create<scf::YieldOp>(loc);
       },
       [&](OpBuilder &childBuilder, Location loc) {
-        doMemset(childBuilder, pTagPool,
-                 op, output, defaultValue, totalNumElems);
+        doMemset(childBuilder, pTagPool, op, output, defaultValue,
+                 totalNumElems);
         childBuilder.create<memref_ext::SliceStartOp>(
-            loc, output, src, offsets, defaultValue,
-            tag.getTag(), ValueRange{tag.getIdx()});
+            loc, output, src, offsets, defaultValue, tag.getTag(),
+            ValueRange{tag.getIdx()});
         childBuilder.create<scf::YieldOp>(loc);
       });
 }
@@ -395,13 +392,12 @@ void doMemFence(OpBuilder &rewriter, Operation *op) { /*NOLINT*/
 
 void doMemsetConfig(OpBuilder &rewriter, Location loc, Value output, Value v,
                     triton::gcu::TagInfo tag) {
-  rewriter.create<memref_ext::MemsetStartOp>(
-      loc, output, v, tag.getTag(), ValueRange{tag.getIdx()});
+  rewriter.create<memref_ext::MemsetStartOp>(loc, output, v, tag.getTag(),
+                                             ValueRange{tag.getIdx()});
 }
 
 void doMemset(OpBuilder &rewriter, triton::gcu::PrivateTagPool &pTagPool,
-              Operation *op, Value output, Value v,
-              int totalNumElems) {
+              Operation *op, Value output, Value v, int totalNumElems) {
   auto loc = op->getLoc();
   if (totalNumElems > 128 || totalNumElems <= 0) {
     auto tag = pTagPool.getSyncTagInfo(op);
@@ -415,12 +411,12 @@ void doMemset(OpBuilder &rewriter, triton::gcu::PrivateTagPool &pTagPool,
                           outType.getElementType()),
           output, 0, ArrayRef<int64_t>{totalNumElems}, ArrayRef<int64_t>{1});
     }
-    rewriter.create<memref_ext::MemsetStartOp>(
-        loc, outbuffer, v, tag.getTag(), ValueRange{tag.getIdx()});
+    rewriter.create<memref_ext::MemsetStartOp>(loc, outbuffer, v, tag.getTag(),
+                                               ValueRange{tag.getIdx()});
     if (v.getType() != rewriter.getI64Type()) {
       rewriter.create<memref::DmaWaitOp>(
-        loc, tag.getTag(), ValueRange{tag.getIdx()},
-        rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
+          loc, tag.getTag(), ValueRange{tag.getIdx()},
+          rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems));
     }
   } else {
     auto type = dyn_cast<MemRefType>(output.getType());
@@ -446,9 +442,9 @@ Value castToMemref1D(OpBuilder &rewriter, Location loc, Value v,
 }
 
 bool isMustAliasOp(mlir::Operation *op) {
-  if (llvm::isa<triton::PtrToIntOp, triton::IntToPtrOp,
-                triton::BitcastOp, gcu::PtrToMemRefOp, gcu::MemRefToPtrOp,
-                gcu::IntToPtrOp, gcu::PtrToIntOp>(op)) {
+  if (llvm::isa<triton::PtrToIntOp, triton::IntToPtrOp, triton::BitcastOp,
+                gcu::PtrToMemRefOp, gcu::MemRefToPtrOp, gcu::IntToPtrOp,
+                gcu::PtrToIntOp>(op)) {
     return true;
   } else if (llvm::isa<triton::gpu::ConvertLayoutOp>(op)) {
     auto convertLayout = cast<triton::gpu::ConvertLayoutOp>(op);
@@ -527,9 +523,10 @@ promoteLastUser(std::pair<mlir::Operation *, int> &lastUser,
   mlir::Operation *parent = curLastUser.first->getParentOp();
   mlir::Operation *originParent = nullptr;
 
-  while (isa_and_nonnull<scf::IfOp, scf::IndexSwitchOp,
-                         scf::ForOp, scf::WhileOp>(parent) &&
-         isa_and_nonnull<scf::YieldOp>(curLastUser.first)) {
+  while (
+      isa_and_nonnull<scf::IfOp, scf::IndexSwitchOp, scf::ForOp, scf::WhileOp>(
+          parent) &&
+      isa_and_nonnull<scf::YieldOp>(curLastUser.first)) {
     if (replaced2Origin.count(parent) == 0) {
       if (llvm::none_of(parent->getOperandTypes(),
                         [](auto t) { return isa<MemRefType>(t); }) &&
@@ -544,9 +541,8 @@ promoteLastUser(std::pair<mlir::Operation *, int> &lastUser,
     }
     // Need to be the replaced op
     newAllocOpPos = parent;
-    curLastUser =
-        userAnalysis.getLastUser(
-            originParent->getResults()[curLastUser.second]);
+    curLastUser = userAnalysis.getLastUser(
+        originParent->getResults()[curLastUser.second]);
     parent = curLastUser.first ? curLastUser.first->getParentOp() : nullptr;
   }
 
@@ -588,7 +584,7 @@ Value syncAllocOp(OpBuilder &builder, Location &loc,
   auto newAllocOpPos = promoteLastUser(lastUser, userAnalysis, replaced2Origin);
   Value output;
   if (newAllocOpPos == nullptr) {
-    auto allocOp  = builder.create<memref::AllocOp>(loc, type);
+    auto allocOp = builder.create<memref::AllocOp>(loc, type);
     if (memoryAlignment != INVALID_ALIGNMENT) {
       allocOp->setAttr(kAlignment, builder.getI64IntegerAttr(memoryAlignment));
     }
@@ -616,7 +612,7 @@ Value asyncAllocOp(OpBuilder &builder, Operation *ttParent, MemRefType type,
   return allocOp.getResult();
 }
 
-void createPrintfOp(ConversionPatternRewriter  &rewriter, Location loc,
+void createPrintfOp(ConversionPatternRewriter &rewriter, Location loc,
                     ::llvm::StringRef printOpPrefix, bool hex, Value value) {
   auto printSingleElement = [&](Value operand, size_t i, size_t n,
                                 ValueRange iters) {
@@ -757,8 +753,8 @@ void mergeContinuousDims(OpBuilder &subBuilder, Location loc,
   return;
 }
 
-Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
-                        Type type, Value buffer, bool onlyThread0,
+Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
+                        Value buffer, bool onlyThread0,
                         std::pair<Operation *, int> lastTTUser,
                         std::pair<Operation *, int> firstTTUser,
                         triton::gcu::FirstLastUserAnalysis &userAnalysis,
@@ -777,8 +773,7 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
   auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
   for (unsigned i = 0; i < srcType.getRank(); ++i) {
     offsets.push_back(builder.create<arith::MulIOp>(
-        loc,
-        builder.create<arith::ConstantIntOp>(loc, numElems[i], 32),
+        loc, builder.create<arith::ConstantIntOp>(loc, numElems[i], 32),
         builder.create<arith::IndexCastOp>(loc, builder.getI32Type(),
                                            warpIds[i])));
   }
@@ -804,8 +799,8 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
                                   mergedOffsets, srcType, outputType, buffer,
                                   output);
               builder.create<memref_ext::SliceStartOp>(
-                  loc, dst, src, mergedOffsets, defaultValue,
-                  tag.getTag(), ValueRange{tag.getIdx()});
+                  loc, dst, src, mergedOffsets, defaultValue, tag.getTag(),
+                  ValueRange{tag.getIdx()});
               auto [oriOutputStrides, oriOutputOffset] =
                   outputType.getStridesAndOffset();
               builder.create<memref::ReinterpretCastOp>(
@@ -814,8 +809,8 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
                   oriOutputStrides);
             } else {
               builder.create<memref_ext::SliceStartOp>(
-                  loc, output, buffer, offsets, defaultValue,
-                  tag.getTag(), ValueRange{tag.getIdx()});
+                  loc, output, buffer, offsets, defaultValue, tag.getTag(),
+                  ValueRange{tag.getIdx()});
             }
             builder.create<memref::DmaWaitOp>(
                 loc, tag.getTag(), ValueRange{tag.getIdx()}, totalNumElems);
@@ -825,9 +820,9 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
       if (isNeedMerge) {
         mergeContinuousDims(builder, loc, src, dst, offsets, mergedOffsets,
                             srcType, outputType, buffer, output);
-        builder.create<memref_ext::SliceStartOp>(
-            loc, dst, src, mergedOffsets, defaultValue,
-            tag.getTag(), ValueRange{tag.getIdx()});
+        builder.create<memref_ext::SliceStartOp>(loc, dst, src, mergedOffsets,
+                                                 defaultValue, tag.getTag(),
+                                                 ValueRange{tag.getIdx()});
         auto [oriOutputStrides, oriOutputOffset] =
             outputType.getStridesAndOffset();
         builder.create<memref::ReinterpretCastOp>(
@@ -835,9 +830,9 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
             SmallVector<int64_t>(numElems.begin(), numElems.end()),
             oriOutputStrides);
       } else {
-        builder.create<memref_ext::SliceStartOp>(
-            loc, output, buffer, offsets, defaultValue,
-            tag.getTag(), ValueRange{tag.getIdx()});
+        builder.create<memref_ext::SliceStartOp>(loc, output, buffer, offsets,
+                                                 defaultValue, tag.getTag(),
+                                                 ValueRange{tag.getIdx()});
       }
       builder.create<memref::DmaWaitOp>(
           loc, tag.getTag(), ValueRange{tag.getIdx()}, totalNumElems);
@@ -851,8 +846,8 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
                                   mergedOffsets, srcType, outputType, buffer,
                                   output);
               builder.create<memref_ext::SliceStartOp>(
-                  loc, dst, src, mergedOffsets, defaultValue,
-                  tag.getTag(), ValueRange{tag.getIdx()});
+                  loc, dst, src, mergedOffsets, defaultValue, tag.getTag(),
+                  ValueRange{tag.getIdx()});
               auto [oriOutputStrides, oriOutputOffset] =
                   outputType.getStridesAndOffset();
               builder.create<memref::ReinterpretCastOp>(
@@ -861,8 +856,8 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
                   oriOutputStrides);
             } else {
               builder.create<memref_ext::SliceStartOp>(
-                  loc, output, buffer, offsets, defaultValue,
-                  tag.getTag(), ValueRange{tag.getIdx()});
+                  loc, output, buffer, offsets, defaultValue, tag.getTag(),
+                  ValueRange{tag.getIdx()});
             }
             builder.create<scf::YieldOp>(loc);
           });
@@ -879,9 +874,9 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
       if (isNeedMerge) {
         mergeContinuousDims(builder, loc, src, dst, offsets, mergedOffsets,
                             srcType, outputType, buffer, output);
-        builder.create<memref_ext::SliceStartOp>(
-            loc, dst, src, mergedOffsets, defaultValue,
-            tag.getTag(), ValueRange{tag.getIdx()});
+        builder.create<memref_ext::SliceStartOp>(loc, dst, src, mergedOffsets,
+                                                 defaultValue, tag.getTag(),
+                                                 ValueRange{tag.getIdx()});
         auto [oriOutputStrides, oriOutputOffset] =
             outputType.getStridesAndOffset();
         builder.create<memref::ReinterpretCastOp>(
@@ -889,9 +884,9 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
             SmallVector<int64_t>(numElems.begin(), numElems.end()),
             oriOutputStrides);
       } else {
-        builder.create<memref_ext::SliceStartOp>(
-            loc, output, buffer, offsets, defaultValue,
-            tag.getTag(), ValueRange{tag.getIdx()});
+        builder.create<memref_ext::SliceStartOp>(loc, output, buffer, offsets,
+                                                 defaultValue, tag.getTag(),
+                                                 ValueRange{tag.getIdx()});
       }
       auto ip = builder.saveInsertionPoint();
       builder.setInsertionPoint(firstTTUser.first);
@@ -903,8 +898,8 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
   return output;
 }
 
-Value CopyFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
-                        Type type, Value buffer, bool onlyThread0,
+Value CopyFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
+                        Value buffer, bool onlyThread0,
                         std::pair<Operation *, int> lastTTUser,
                         std::pair<Operation *, int> firstTTUser,
                         triton::gcu::FirstLastUserAnalysis &userAnalysis,
@@ -980,8 +975,8 @@ Value CopyFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
 }
 
 void storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
-                      TensorType type, Value sharedBuffer,
-                      Value buffer, bool onlyThread0) {
+                      TensorType type, Value sharedBuffer, Value buffer,
+                      bool onlyThread0) {
   auto loc = buffer.getLoc();
   auto srcType = dyn_cast<MemRefType>(buffer.getType());
   auto outputType = dyn_cast<MemRefType>(sharedBuffer.getType());
@@ -998,7 +993,7 @@ void storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
         builder.create<arith::ConstantIntOp>(loc, srcType.getDimSize(i), 32),
         builder.create<arith::IndexCastOp>(loc, builder.getI32Type(),
                                            warpIds[i])));
-        outputSize.push_back(outputType.getShape()[i]);
+    outputSize.push_back(outputType.getShape()[i]);
   }
   auto isThread0 = builder.create<arith::CmpIOp>(
       loc, arith::CmpIPredicate::eq,
@@ -1016,15 +1011,15 @@ void storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
             auto [oriOutputStrides, oriOutputOffset] =
                 outputType.getStridesAndOffset();
             builder.create<memref_ext::DesliceStartOp>(
-                loc, dst, src, mergedOffsets,
-                tag.getTag(), ValueRange{tag.getIdx()});
+                loc, dst, src, mergedOffsets, tag.getTag(),
+                ValueRange{tag.getIdx()});
             builder.create<memref::ReinterpretCastOp>(
                 loc, outputType, dst, oriOutputOffset, outputSize,
                 oriOutputStrides);
           } else {
             builder.create<memref_ext::DesliceStartOp>(
-                loc, sharedBuffer, buffer, offsets,
-                tag.getTag(), ValueRange{tag.getIdx()});
+                loc, sharedBuffer, buffer, offsets, tag.getTag(),
+                ValueRange{tag.getIdx()});
           }
           builder.create<memref::DmaWaitOp>(
               loc, tag.getTag(), ValueRange{tag.getIdx()}, totalNumElems);
@@ -1037,17 +1032,16 @@ void storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
       auto [oriOutputStrides, oriOutputOffset] =
           outputType.getStridesAndOffset();
       builder.create<memref_ext::DesliceStartOp>(
-          loc, dst, src, mergedOffsets,
-          tag.getTag(), ValueRange{tag.getIdx()});
+          loc, dst, src, mergedOffsets, tag.getTag(), ValueRange{tag.getIdx()});
       builder.create<memref::ReinterpretCastOp>(
           loc, outputType, dst, oriOutputOffset, outputSize, oriOutputStrides);
     } else {
-      builder.create<memref_ext::DesliceStartOp>(
-          loc, sharedBuffer, buffer, offsets,
-          tag.getTag(), ValueRange{tag.getIdx()});
+      builder.create<memref_ext::DesliceStartOp>(loc, sharedBuffer, buffer,
+                                                 offsets, tag.getTag(),
+                                                 ValueRange{tag.getIdx()});
     }
-    builder.create<memref::DmaWaitOp>(
-        loc, tag.getTag(), ValueRange{tag.getIdx()}, totalNumElems);
+    builder.create<memref::DmaWaitOp>(loc, tag.getTag(),
+                                      ValueRange{tag.getIdx()}, totalNumElems);
   }
   builder.create<gpu::BarrierOp>(loc);
 }
@@ -1061,7 +1055,7 @@ Value storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
   auto mergedType = MemRefType::get(
       type.getShape(), dyn_cast<MemRefType>(buffer.getType()).getElementType(),
       AffineMap{},
-      builder.getI64IntegerAttr(2));  // shared memory
+      builder.getI64IntegerAttr(2)); // shared memory
 
   auto merged = syncAllocOp(builder, loc, lastTTUser, userAnalysis,
                             replaced2Origin, mergedType);
@@ -1071,8 +1065,7 @@ Value storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
 
 // refine yiled memref operand
 void AnalysisYieldOperendUseStage(
-    Operation *module,
-    triton::gcu::FirstLastUserAnalysis &userAnalysis,
+    Operation *module, triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, std::map<uint64_t, bool>>
         &TTYeiledOPerandHasMultiUseStage) {
   module->walk<WalkOrder::PreOrder>([&](scf::YieldOp op) {
@@ -1086,13 +1079,12 @@ void AnalysisYieldOperendUseStage(
           TTYeiledOPerandHasMultiUseStage[op.getOperation()][i] = true;
           continue;
         }
-        if (isa<TensorType>(operand.getType()) && isa<scf::ForOp>(
-                op.getOperation()->getParentOp())) {
+        if (isa<TensorType>(operand.getType()) &&
+            isa<scf::ForOp>(op.getOperation()->getParentOp())) {
           auto forOp = llvm::cast<scf::ForOp>(op.getOperation()->getParentOp());
           auto reginArg = forOp.getRegionIterArgs()[i];
           auto lastUser =
-              userAnalysis.getLastUser(reginArg,
-                                       definingOp->getParentRegion());
+              userAnalysis.getLastUser(reginArg, definingOp->getParentRegion());
           if (lastUser.first == nullptr) {
             TTYeiledOPerandHasMultiUseStage[op.getOperation()][i] = true;
           } else {
@@ -1100,14 +1092,13 @@ void AnalysisYieldOperendUseStage(
               TTYeiledOPerandHasMultiUseStage[op.getOperation()][i] = true;
             }
           }
-        } else if (isa<TensorType>(operand.getType()) && isa<scf::WhileOp>(
-                       op.getOperation()->getParentOp())) {
+        } else if (isa<TensorType>(operand.getType()) &&
+                   isa<scf::WhileOp>(op.getOperation()->getParentOp())) {
           auto whileOp =
               llvm::cast<scf::WhileOp>(op.getOperation()->getParentOp());
           auto reginArg = whileOp.getAfterArguments()[i];
           auto lastUser =
-              userAnalysis.getLastUser(reginArg,
-                                       definingOp->getParentRegion());
+              userAnalysis.getLastUser(reginArg, definingOp->getParentRegion());
           if (lastUser.first == nullptr) {
             TTYeiledOPerandHasMultiUseStage[op.getOperation()][i] = true;
           } else {
@@ -1121,75 +1112,73 @@ void AnalysisYieldOperendUseStage(
   });
 }
 
-void GetOrderValueByStride(OpBuilder &rewriter, Location loc,
-  SmallVector<unsigned> nInitStrideDims, SmallVector<Value, 4> &initStride,
-  SmallVector<Value, 4> &initShape, SmallVector<Value, 4> &initOffset,
-  SmallVector<Value, 4> &orderStride, SmallVector<Value, 4> &orderShape,
-  SmallVector<Value, 4> &orderOffset, SmallVector<Value, 4> &vOrder) {
-    int64_t rank = static_cast<int64_t>(nInitStrideDims.size());
+void GetOrderValueByStride(
+    OpBuilder &rewriter, Location loc, SmallVector<unsigned> nInitStrideDims,
+    SmallVector<Value, 4> &initStride, SmallVector<Value, 4> &initShape,
+    SmallVector<Value, 4> &initOffset, SmallVector<Value, 4> &orderStride,
+    SmallVector<Value, 4> &orderShape, SmallVector<Value, 4> &orderOffset,
+    SmallVector<Value, 4> &vOrder) {
+  int64_t rank = static_cast<int64_t>(nInitStrideDims.size());
 
-    SmallVector<Value, 4> tmpStrideBuffer = initStride;
-    SmallVector<Value, 4> tmpShapeBuffer = initShape;
-    SmallVector<Value, 4> tmpOffsetBuffer = initOffset;
-    SmallVector<Value, 4> tmpOrderBuffer;
-    for (int64_t i = 0; i < rank; ++i) {
-      Value stride =
-          rewriter.create<arith::ConstantIntOp>(loc, nInitStrideDims[i],
-                                                32);
-      tmpOrderBuffer.push_back(stride);
+  SmallVector<Value, 4> tmpStrideBuffer = initStride;
+  SmallVector<Value, 4> tmpShapeBuffer = initShape;
+  SmallVector<Value, 4> tmpOffsetBuffer = initOffset;
+  SmallVector<Value, 4> tmpOrderBuffer;
+  for (int64_t i = 0; i < rank; ++i) {
+    Value stride =
+        rewriter.create<arith::ConstantIntOp>(loc, nInitStrideDims[i], 32);
+    tmpOrderBuffer.push_back(stride);
+  }
+
+  for (int64_t i = 0; i < rank - 1; ++i) {
+    for (int64_t j = 0; j < rank - 1 - i; j++) {
+      Value cmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
+                                                 tmpStrideBuffer[j],
+                                                 tmpStrideBuffer[j + 1]);
+
+      Value tmpStride = rewriter.create<arith::SelectOp>(
+          loc, cmp, tmpStrideBuffer[j], tmpStrideBuffer[j + 1]);
+      tmpStrideBuffer[j] = rewriter.create<arith::SelectOp>(
+          loc, cmp, tmpStrideBuffer[j + 1], tmpStrideBuffer[j]);
+      tmpStrideBuffer[j + 1] = tmpStride;
+
+      Value tmpShape = rewriter.create<arith::SelectOp>(
+          loc, cmp, tmpShapeBuffer[j], tmpShapeBuffer[j + 1]);
+      tmpShapeBuffer[j] = rewriter.create<arith::SelectOp>(
+          loc, cmp, tmpShapeBuffer[j + 1], tmpShapeBuffer[j]);
+      tmpShapeBuffer[j + 1] = tmpShape;
+
+      Value tmpOffset = rewriter.create<arith::SelectOp>(
+          loc, cmp, tmpOffsetBuffer[j], tmpOffsetBuffer[j + 1]);
+      tmpOffsetBuffer[j] = rewriter.create<arith::SelectOp>(
+          loc, cmp, tmpOffsetBuffer[j + 1], tmpOffsetBuffer[j]);
+      tmpOffsetBuffer[j + 1] = tmpOffset;
+
+      Value tmpOrder = rewriter.create<arith::SelectOp>(
+          loc, cmp, tmpOrderBuffer[j], tmpOrderBuffer[j + 1]);
+      tmpOrderBuffer[j] = rewriter.create<arith::SelectOp>(
+          loc, cmp, tmpOrderBuffer[j + 1], tmpOrderBuffer[j]);
+      tmpOrderBuffer[j + 1] = tmpOrder;
     }
+  }
 
-    for (int64_t i = 0; i < rank - 1; ++i) {
-      for (int64_t j = 0; j < rank - 1 - i; j++) {
-        Value cmp = rewriter.create<arith::CmpIOp>(
-            loc, arith::CmpIPredicate::slt,
-            tmpStrideBuffer[j], tmpStrideBuffer[j + 1]);
+  vOrder = tmpOrderBuffer;
+  orderStride = tmpStrideBuffer;
+  for (int64_t i = 0; i < rank; ++i) {
+    orderOffset.push_back(rewriter.create<arith::IndexCastOp>(
+        loc, rewriter.getI32Type(), tmpOffsetBuffer[i]));
+  }
 
-        Value tmpStride = rewriter.create<arith::SelectOp>(
-            loc, cmp, tmpStrideBuffer[j], tmpStrideBuffer[j + 1]);
-        tmpStrideBuffer[j] = rewriter.create<arith::SelectOp>(
-            loc, cmp, tmpStrideBuffer[j + 1], tmpStrideBuffer[j]);
-        tmpStrideBuffer[j + 1] = tmpStride;
-
-        Value tmpShape = rewriter.create<arith::SelectOp>(
-            loc, cmp, tmpShapeBuffer[j], tmpShapeBuffer[j + 1]);
-        tmpShapeBuffer[j] = rewriter.create<arith::SelectOp>(
-            loc, cmp, tmpShapeBuffer[j + 1], tmpShapeBuffer[j]);
-        tmpShapeBuffer[j + 1] = tmpShape;
-
-        Value tmpOffset = rewriter.create<arith::SelectOp>(
-            loc, cmp, tmpOffsetBuffer[j], tmpOffsetBuffer[j + 1]);
-        tmpOffsetBuffer[j] = rewriter.create<arith::SelectOp>(
-            loc, cmp, tmpOffsetBuffer[j + 1], tmpOffsetBuffer[j]);
-        tmpOffsetBuffer[j + 1] = tmpOffset;
-
-        Value tmpOrder = rewriter.create<arith::SelectOp>(
-            loc, cmp, tmpOrderBuffer[j], tmpOrderBuffer[j + 1]);
-        tmpOrderBuffer[j] = rewriter.create<arith::SelectOp>(
-            loc, cmp, tmpOrderBuffer[j + 1], tmpOrderBuffer[j]);
-        tmpOrderBuffer[j + 1] = tmpOrder;
-      }
-    }
-
-    vOrder = tmpOrderBuffer;
-    orderStride = tmpStrideBuffer;
-    for (int64_t i = 0; i < rank; ++i) {
-      orderOffset.push_back(
-          rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(),
-                                              tmpOffsetBuffer[i]));
-    }
-
-
-    orderShape.push_back(tmpShapeBuffer[0]);
-    for (int64_t i = 0; i < rank - 1; ++i) {
-      orderShape.push_back(
-          rewriter.create<arith::DivSIOp>(loc, orderStride[i],
-                                          orderStride[i+1]));
-    }
+  orderShape.push_back(tmpShapeBuffer[0]);
+  for (int64_t i = 0; i < rank - 1; ++i) {
+    orderShape.push_back(rewriter.create<arith::DivSIOp>(loc, orderStride[i],
+                                                         orderStride[i + 1]));
+  }
 }
 
 void GetTransByOrder(OpBuilder &rewriter, Location loc,
-              SmallVector<Value, 4> &order, SmallVector<Value, 4> &transOrder) {
+                     SmallVector<Value, 4> &order,
+                     SmallVector<Value, 4> &transOrder) {
   unsigned rank = order.size();
 
   SmallVector<Value, 4> tmpOrderBuffer = order;
@@ -1201,9 +1190,9 @@ void GetTransByOrder(OpBuilder &rewriter, Location loc,
 
   for (unsigned i = 0; i < rank - 1; ++i) {
     for (unsigned j = 0; j < rank - 1 - i; j++) {
-      Value cmp = rewriter.create<arith::CmpIOp>(
-          loc, arith::CmpIPredicate::sgt,
-          tmpOrderBuffer[j], tmpOrderBuffer[j + 1]);
+      Value cmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sgt,
+                                                 tmpOrderBuffer[j],
+                                                 tmpOrderBuffer[j + 1]);
 
       Value tmpOrder = rewriter.create<arith::SelectOp>(
           loc, cmp, tmpOrderBuffer[j], tmpOrderBuffer[j + 1]);
@@ -1223,8 +1212,8 @@ void GetTransByOrder(OpBuilder &rewriter, Location loc,
 
 Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
                     triton::gcu::PrivateTagPool &pTagPool, Value srcOut,
-                    mlir::Operation *op, MemRefType resultType,
-                    Value loadPtr, mlir::ValueRange configStrides,
+                    mlir::Operation *op, MemRefType resultType, Value loadPtr,
+                    mlir::ValueRange configStrides,
                     mlir::ValueRange configShapes, Value defaultValue,
                     triton::gcu::TagInfo tag, bool IsShareOutput) {
   if ((!llvm::isa_and_nonnull<triton::gcu::LoadOp>(op)) &&
@@ -1235,8 +1224,7 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
     if (llvm::isa_and_nonnull<triton::gcu::LoadOp>(op)) {
       auto load = llvm::cast<triton::gcu::LoadOp>(op);
       return load.getOrderHint();
-    } else if (llvm::isa_and_nonnull<triton::gcu::AsyncLoadFromGlobalOp>(
-                   op)) {
+    } else if (llvm::isa_and_nonnull<triton::gcu::AsyncLoadFromGlobalOp>(op)) {
       auto dynamicLoad = llvm::cast<triton::gcu::AsyncLoadFromGlobalOp>(op);
       return dynamicLoad.getOrderHint();
     } else {
@@ -1248,8 +1236,7 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
     if (llvm::isa_and_nonnull<triton::gcu::LoadOp>(op)) {
       auto load = llvm::cast<triton::gcu::LoadOp>(op);
       return load.getDefaultValue();
-    } else if (llvm::isa_and_nonnull<triton::gcu::AsyncLoadFromGlobalOp>(
-                   op)) {
+    } else if (llvm::isa_and_nonnull<triton::gcu::AsyncLoadFromGlobalOp>(op)) {
       auto dynamicLoad = llvm::cast<triton::gcu::AsyncLoadFromGlobalOp>(op);
       return dynamicLoad.getDefaultValue();
     } else {
@@ -1286,7 +1273,7 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
     if (order_hint[i] == -1) {
       bDynamicStride = true;
       if ((triton::gcu::get_bool_env("TRITON_GCU_DEBUG") ||
-          triton::gcu::get_bool_env("TRITON_ENABLE_ASAN"))) {
+           triton::gcu::get_bool_env("TRITON_ENABLE_ASAN"))) {
         auto trueCondition = rewriter.create<arith::CmpIOp>(
             loc, arith::CmpIPredicate::ne, configStrides[i], zero);
         rewriter.create<triton::gcu::AssertOp>(
@@ -1298,25 +1285,26 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
     }
   }
   if (bDynamicStride && (triton::gcu::get_bool_env("TRITON_GCU_DEBUG") ||
-      triton::gcu::get_bool_env("TRITON_ENABLE_ASAN"))) {
+                         triton::gcu::get_bool_env("TRITON_ENABLE_ASAN"))) {
     for (int i = 0; i < rank; ++i) {
       for (int j = i + 1; j < rank; ++j) {
         if ((order_hint[i] == 0) && (order_hint[j] == 0))
           continue;
         auto remOp_1 = rewriter.create<arith::RemSIOp>(loc, configStrides[i],
-            configStrides[j]);
+                                                       configStrides[j]);
         auto remOp_2 = rewriter.create<arith::RemSIOp>(loc, configStrides[j],
-            configStrides[i]);
-        auto trueCondition = rewriter.create<arith::OrIOp>(loc,
-          rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-          remOp_1, zero),
-          rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-          remOp_2, zero));
+                                                       configStrides[i]);
+        auto trueCondition = rewriter.create<arith::OrIOp>(
+            loc,
+            rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                           remOp_1, zero),
+            rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                           remOp_2, zero));
         rewriter.create<triton::gcu::AssertOp>(
-          loc, trueCondition,
-          "Not Support stride_large rem stride_lower is not zero,"
-          "please add ENABLE_STRIDE_GATHER=True in kernel args list",
-          "", "", 0);
+            loc, trueCondition,
+            "Not Support stride_large rem stride_lower is not zero,"
+            "please add ENABLE_STRIDE_GATHER=True in kernel args list",
+            "", "", 0);
       }
     }
   }
@@ -1432,9 +1420,9 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
                            rewriter.create<arith::IndexCastOp>(
                                loc, rewriter.getI32Type(), zero));
       vSrcOffsets.insert(vSrcOffsets.begin() + updateDim, zero);
-      vTempOrder.insert(vTempOrder.begin() + updateDim,
-                         rewriter.create<arith::ConstantIntOp>(
-                             loc, updateDim, 32));
+      vTempOrder.insert(
+          vTempOrder.begin() + updateDim,
+          rewriter.create<arith::ConstantIntOp>(loc, updateDim, 32));
     }
     GetTransByOrder(rewriter, loc, vTempOrder, vTransOrder);
   } else {
@@ -1446,7 +1434,7 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
       staticOrderStrides[static_order[i]] = vSrcStrides[i];
       staticOrderShapes[static_order[i]] = vSrcShapes[i];
       staticOrderOffsets[static_order[i]] = rewriter.create<arith::IndexCastOp>(
-        loc, rewriter.getI32Type(), vSrcOffsets[i]);
+          loc, rewriter.getI32Type(), vSrcOffsets[i]);
     }
 
     for (int i = 0; i < rank; ++i) {
@@ -1494,8 +1482,8 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
         rewriter.create<arith::SubIOp>(loc, vResultShapes[i], vSlicehape[i]);
     padSize = rewriter.create<arith::AddIOp>(loc, padSize, dim_diff);
     padSizes.push_back(dim_diff);
-    padOffsets.push_back(rewriter.create<arith::IndexCastOp>(
-          loc, rewriter.getI32Type(), zero));
+    padOffsets.push_back(
+        rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(), zero));
   }
 
   auto isNeedPad = rewriter.create<arith::CmpIOp>(
@@ -1536,8 +1524,8 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
           loc, isTrans,
           [&](OpBuilder &builder, Location loc) {
             builder.create<memref_ext::SliceTransposeStartOp>(
-                loc, reshapeOut, src, vOrderOffsets, vTransOrder,
-                defaultValue, tag.getTag(), ValueRange{tag.getIdx()});
+                loc, reshapeOut, src, vOrderOffsets, vTransOrder, defaultValue,
+                tag.getTag(), ValueRange{tag.getIdx()});
             builder.create<scf::YieldOp>(loc);
           },
           [&](OpBuilder &builder, Location loc) {
@@ -1546,8 +1534,8 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
                 [&](OpBuilder &childBuilder, Location loc) {
                   doSlicePadOrMemsetSlice(childBuilder, loc, pTagPool, op,
                                           reshapeOut, src, vOrderOffsets,
-                                          vIntSlicehape, padSizes,
-                                          defaultValue, tag);
+                                          vIntSlicehape, padSizes, defaultValue,
+                                          tag);
                   childBuilder.create<scf::YieldOp>(loc);
                 },
                 [&](OpBuilder &childBuilder, Location loc) {
@@ -1565,32 +1553,31 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
           });
     } else if (bStaticTranspose) {
       rewriter.create<scf::IfOp>(
-          loc, isThread0,
-          [&](OpBuilder &builder, Location loc) {
-                builder.create<memref_ext::SliceTransposeStartOp>(
-                    loc, reshapeOut, src, vOrderOffsets, vTransOrder,
-                    defaultValue, tag.getTag(), ValueRange{tag.getIdx()});
-                builder.create<scf::YieldOp>(loc);
-            });
+          loc, isThread0, [&](OpBuilder &builder, Location loc) {
+            builder.create<memref_ext::SliceTransposeStartOp>(
+                loc, reshapeOut, src, vOrderOffsets, vTransOrder, defaultValue,
+                tag.getTag(), ValueRange{tag.getIdx()});
+            builder.create<scf::YieldOp>(loc);
+          });
     } else {
       rewriter.create<scf::IfOp>(
-        loc, isPad,
-        [&](OpBuilder &builder, Location loc) {
-          doSlicePadOrMemsetSlice(builder, loc, pTagPool, op, reshapeOut,
-                                  src, vOrderOffsets, vIntSlicehape, padSizes,
-                                  defaultValue, tag);
-          builder.create<scf::YieldOp>(loc);
-        },
-        [&](OpBuilder &builder, Location loc) {
-          builder.create<scf::IfOp>(
-            loc, isThread0, [&](OpBuilder &childBuilder, Location loc) {
-              childBuilder.create<memref_ext::SliceStartOp>(
-                  loc, reshapeOut, src, vOrderOffsets, defaultValue,
-                  tag.getTag(), ValueRange{tag.getIdx()});
-              childBuilder.create<scf::YieldOp>(loc);
+          loc, isPad,
+          [&](OpBuilder &builder, Location loc) {
+            doSlicePadOrMemsetSlice(builder, loc, pTagPool, op, reshapeOut, src,
+                                    vOrderOffsets, vIntSlicehape, padSizes,
+                                    defaultValue, tag);
+            builder.create<scf::YieldOp>(loc);
+          },
+          [&](OpBuilder &builder, Location loc) {
+            builder.create<scf::IfOp>(
+                loc, isThread0, [&](OpBuilder &childBuilder, Location loc) {
+                  childBuilder.create<memref_ext::SliceStartOp>(
+                      loc, reshapeOut, src, vOrderOffsets, defaultValue,
+                      tag.getTag(), ValueRange{tag.getIdx()});
+                  childBuilder.create<scf::YieldOp>(loc);
+                });
+            builder.create<scf::YieldOp>(loc);
           });
-          builder.create<scf::YieldOp>(loc);
-        });
     }
   } else {
     auto isNotZero = rewriter.create<arith::CmpIOp>(
@@ -1603,8 +1590,8 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
           loc, isTrans,
           [&](OpBuilder &builder, Location loc) {
             builder.create<memref_ext::SliceTransposeStartOp>(
-                loc, reshapeOut, src, vOrderOffsets, vTransOrder,
-                defaultValue, tag.getTag(), ValueRange{tag.getIdx()});
+                loc, reshapeOut, src, vOrderOffsets, vTransOrder, defaultValue,
+                tag.getTag(), ValueRange{tag.getIdx()});
             builder.create<scf::YieldOp>(loc);
           },
           [&](OpBuilder &builder, Location loc) {
@@ -1613,8 +1600,8 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
                 [&](OpBuilder &childBuilder, Location loc) {
                   doSlicePadOrMemsetSlice(childBuilder, loc, pTagPool, op,
                                           reshapeOut, src, vOrderOffsets,
-                                          vIntSlicehape, padSizes,
-                                          defaultValue, tag);
+                                          vIntSlicehape, padSizes, defaultValue,
+                                          tag);
                   childBuilder.create<scf::YieldOp>(loc);
                 },
                 [&](OpBuilder &childBuilder, Location loc) {
@@ -1629,7 +1616,7 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
                       [&](OpBuilder &child2Builder, Location loc) {
                         if (getDefaultValue(op)) {
                           doMemsetConfig(child2Builder, loc, reshapeOut,
-                                          defaultValue, tag);
+                                         defaultValue, tag);
                         }
                         child2Builder.create<scf::YieldOp>(loc);
                       });
@@ -1642,8 +1629,8 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
           loc, isNotZero,
           [&](OpBuilder &builder, Location loc) {
             builder.create<memref_ext::SliceTransposeStartOp>(
-                loc, reshapeOut, src, vOrderOffsets, vTransOrder,
-                defaultValue, tag.getTag(), ValueRange{tag.getIdx()});
+                loc, reshapeOut, src, vOrderOffsets, vTransOrder, defaultValue,
+                tag.getTag(), ValueRange{tag.getIdx()});
             builder.create<scf::YieldOp>(loc);
           },
           [&](OpBuilder &builder, Location loc) {
@@ -1656,8 +1643,7 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
       rewriter.create<scf::IfOp>(
           loc, isPad,
           [&](OpBuilder &builder, Location loc) {
-            doSlicePadOrMemsetSlice(builder, loc, pTagPool, op,
-                                    reshapeOut, src,
+            doSlicePadOrMemsetSlice(builder, loc, pTagPool, op, reshapeOut, src,
                                     vOrderOffsets, vIntSlicehape, padSizes,
                                     defaultValue, tag);
             builder.create<scf::YieldOp>(loc);
@@ -1673,8 +1659,8 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
                 },
                 [&](OpBuilder &childBuilder, Location loc) {
                   if (getDefaultValue(op)) {
-                    doMemsetConfig(childBuilder, loc, reshapeOut,
-                                   defaultValue, tag);
+                    doMemsetConfig(childBuilder, loc, reshapeOut, defaultValue,
+                                   tag);
                   }
                   childBuilder.create<scf::YieldOp>(loc);
                 });
@@ -1686,364 +1672,366 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc,
 }
 
 Value ConfigGcuStore(OpBuilder &rewriter, Location loc, Value storeValue,
-      /*Value transOut,*/ mlir::Operation *op, MemRefType storeValueType,
-      Value storePtr, mlir::ValueRange configStrides,
-      mlir::ValueRange configShapes, triton::gcu::TagInfo tag) {
-    auto storeOp = dyn_cast<triton::gcu::StoreOp>(op);
-    assert(storeOp);
+                     /*Value transOut,*/ mlir::Operation *op,
+                     MemRefType storeValueType, Value storePtr,
+                     mlir::ValueRange configStrides,
+                     mlir::ValueRange configShapes, triton::gcu::TagInfo tag) {
+  auto storeOp = dyn_cast<triton::gcu::StoreOp>(op);
+  assert(storeOp);
 
-    auto storeType = storeOp.getValue().getType();
-    auto elemType = storeOp.getPtr().getType().getElementType();
-    auto buffer = rewriter.create<gcu::PtrToMemRefOp>(
-        loc, MemRefType::get(ArrayRef<int64_t>{ShapedType::kDynamic}, elemType),
-        storePtr);
+  auto storeType = storeOp.getValue().getType();
+  auto elemType = storeOp.getPtr().getType().getElementType();
+  auto buffer = rewriter.create<gcu::PtrToMemRefOp>(
+      loc, MemRefType::get(ArrayRef<int64_t>{ShapedType::kDynamic}, elemType),
+      storePtr);
 
-    int64_t rank = storeValueType.getRank();
-    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    auto zero32 =
-        rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(), zero);
+  int64_t rank = storeValueType.getRank();
+  auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+  auto zero32 =
+      rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(), zero);
 
-    bool bDynamicStride = false;
-    bool bStaticTranspose = false;
-    bool bReshape = true;
-    SmallVector<unsigned> updateStrideDims;
-    SmallVector<unsigned> nInitStrideDims;
-    auto hint = storeOp.getOrderHint();
-    int64_t hint_size = static_cast<int64_t>(hint.size());
-    assert(hint_size == rank || hint_size == 0);
-    SmallVector<int32_t> order_hint;
-    for (unsigned i = 0; i < rank; ++i)
-      if ( hint_size == 0)
-        order_hint.push_back(-1);
-      else
-        order_hint.push_back(hint[i]);
+  bool bDynamicStride = false;
+  bool bStaticTranspose = false;
+  bool bReshape = true;
+  SmallVector<unsigned> updateStrideDims;
+  SmallVector<unsigned> nInitStrideDims;
+  auto hint = storeOp.getOrderHint();
+  int64_t hint_size = static_cast<int64_t>(hint.size());
+  assert(hint_size == rank || hint_size == 0);
+  SmallVector<int32_t> order_hint;
+  for (unsigned i = 0; i < rank; ++i)
+    if (hint_size == 0)
+      order_hint.push_back(-1);
+    else
+      order_hint.push_back(hint[i]);
 
-    for (unsigned i = 0; i < rank; ++i) {
-      if (order_hint[i] == -1) {
-        bDynamicStride = true;
-        auto trueCondition = rewriter.create<arith::CmpIOp>(
-              loc, arith::CmpIPredicate::ne, configStrides[i], zero);
-        rewriter.create<triton::gcu::AssertOp>(
-            loc, trueCondition, "Not Support dynamic stride is 0", "", "", 0);
-      }
+  for (unsigned i = 0; i < rank; ++i) {
+    if (order_hint[i] == -1) {
+      bDynamicStride = true;
+      auto trueCondition = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::ne, configStrides[i], zero);
+      rewriter.create<triton::gcu::AssertOp>(
+          loc, trueCondition, "Not Support dynamic stride is 0", "", "", 0);
+    }
+  }
+
+  for (int i = 0; i < rank; ++i) {
+    if ((order_hint[i] == 0 && !bDynamicStride) ||
+        (order_hint[i] == 1 && bDynamicStride)) {
+      bReshape = false;
+      break;
+    }
+  }
+
+  for (int i = 0; i < rank; ++i) {
+    if (bDynamicStride && order_hint[i] == 0)
+      updateStrideDims.push_back(i);
+    else
+      nInitStrideDims.push_back(i);
+  }
+
+  SmallVector<Value, 4> vSrcOffsets;
+  auto numElems = triton::gcu::getElemsPerThread(storeType);
+  SmallVector<Value, 4> vNumElems;
+  for (unsigned i = 0; i < rank; ++i)
+    vNumElems.push_back(
+        rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]));
+  auto warpIds = getWarpIds(rewriter, loc, storeType);
+  for (auto dim : nInitStrideDims) {
+    Value offset =
+        rewriter.create<arith::MulIOp>(loc, warpIds[dim], vNumElems[dim]);
+    vSrcOffsets.push_back(offset);
+  }
+
+  SmallVector<Value, 4> vSrcStrides;
+  SmallVector<Value, 4> vSrcShapes;
+  for (auto dim : nInitStrideDims) {
+    vSrcStrides.push_back(configStrides[dim]);
+    vSrcShapes.push_back(configShapes[dim]);
+  }
+
+  SmallVector<Value, 4> vStoreShapes;
+  SmallVector<int64_t, 4> storeShapes;
+  for (unsigned i = 0; i < rank; ++i) {
+    storeShapes.push_back(storeValueType.getShape()[i]);
+    vStoreShapes.push_back(
+        rewriter.create<arith::ConstantIndexOp>(loc, storeShapes[i]));
+  }
+
+  Value reshapeStoreValue = storeValue;
+  if (bReshape) {
+    assert(rank < 4 && "not support stride is no 1 for rank >= 4");
+    vSrcOffsets.push_back(zero);
+    vSrcShapes.push_back(one);
+    vSrcStrides.push_back(one);
+    storeShapes.push_back(1);
+    vStoreShapes.push_back(one);
+    vNumElems.push_back(one);
+    if (bDynamicStride) {
+      order_hint.push_back(1);
+      nInitStrideDims.push_back(rank);
+    } else {
+      for (int i = 0; i < rank; ++i)
+        order_hint[i]--;
+      order_hint.push_back(rank);
+    }
+    rank += 1;
+    auto reshapeStoreType = MemRefType::get(storeShapes, elemType);
+    auto [reshapeStrides, reshapeOffset] =
+        reshapeStoreType.getStridesAndOffset();
+    reshapeStoreValue = rewriter.create<memref::ReinterpretCastOp>(
+        loc, reshapeStoreType, storeValue, reshapeOffset, storeShapes,
+        reshapeStrides);
+  }
+
+  if (rank == 2 && bDynamicStride) {
+    if (order_hint[1] == 1) {
+      order_hint[0] = 0;
+      order_hint[1] = 1;
+      bDynamicStride = false;
+    } else if (order_hint[0] == 1) {
+      order_hint[0] = 1;
+      order_hint[1] = 0;
+      bDynamicStride = false;
+    }
+  }
+
+  SmallVector<Value, 4> vOrderStrides;
+  SmallVector<Value, 4> vOrderShapes;
+  SmallVector<Value, 4> vOrderOffsets;
+  SmallVector<Value, 4> vTransOrder;
+  SmallVector<Value, 4> vTempOrder;
+  if (bDynamicStride) {
+    GetOrderValueByStride(rewriter, loc, nInitStrideDims, vSrcStrides,
+                          vSrcShapes, vSrcOffsets, vOrderStrides, vOrderShapes,
+                          vOrderOffsets, vTempOrder);
+    for (auto updateDim : updateStrideDims) {
+      auto updateStride = rewriter.create<arith::MulIOp>(
+          loc, vOrderStrides[updateDim], vOrderShapes[updateDim]);
+      vOrderStrides.insert(vOrderStrides.begin() + updateDim, updateStride);
+      vSrcStrides.insert(vSrcStrides.begin() + updateDim, updateStride);
+      vOrderShapes.insert(vOrderShapes.begin() + updateDim, one);
+      vSrcShapes.insert(vSrcShapes.begin() + updateDim, one);
+      vOrderOffsets.insert(vOrderOffsets.begin() + updateDim,
+                           rewriter.create<arith::IndexCastOp>(
+                               loc, rewriter.getI32Type(), zero));
+      vSrcOffsets.insert(vSrcOffsets.begin() + updateDim, zero);
+      vTempOrder.insert(
+          vTempOrder.begin() + updateDim,
+          rewriter.create<arith::ConstantIntOp>(loc, updateDim, 32));
+    }
+    GetTransByOrder(rewriter, loc, vTempOrder, vTransOrder);
+  } else {
+    SmallVector<int32_t, 4> static_order(order_hint.begin(), order_hint.end());
+    SmallVector<Value> staticOrderStrides(rank);
+    SmallVector<Value> staticOrderShapes(rank);
+    SmallVector<Value> staticOrderOffsets(rank);
+    for (int i = 0; i < rank; ++i) {
+      staticOrderStrides[static_order[i]] = vSrcStrides[i];
+      staticOrderShapes[static_order[i]] = vSrcShapes[i];
+      staticOrderOffsets[static_order[i]] = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getI32Type(), vSrcOffsets[i]);
     }
 
     for (int i = 0; i < rank; ++i) {
-      if ((order_hint[i] == 0 && !bDynamicStride) ||
-          (order_hint[i] == 1 && bDynamicStride)) {
-        bReshape = false;
+      vOrderStrides.push_back(staticOrderStrides[i]);
+      vOrderOffsets.push_back(staticOrderOffsets[i]);
+      vTransOrder.push_back(
+          rewriter.create<arith::ConstantIntOp>(loc, static_order[i], 32));
+    }
+    if (static_order.size() > 0)
+      vOrderShapes.push_back(staticOrderShapes[0]);
+    for (int i = 0; i < rank - 1; ++i) {
+      vOrderShapes.push_back(rewriter.create<arith::DivSIOp>(
+          loc, vOrderStrides[i], vOrderStrides[i + 1]));
+    }
+
+    for (int i = 0; i < rank; ++i) {
+      if (static_order[i] != i) {
+        bStaticTranspose = true;
         break;
       }
     }
+  }
 
-    for (int i = 0; i < rank; ++i) {
-      if (bDynamicStride && order_hint[i] == 0)
-        updateStrideDims.push_back(i);
-      else
-        nInitStrideDims.push_back(i);
-    }
+  SmallVector<Value, 4> vSlicehape;
+  SmallVector<Value, 4> vIntSlicehape;
+  Value totalSize = one;
+  for (unsigned i = 0; i < rank; ++i) {
+    auto shape = rewriter.create<arith::MinSIOp>(
+        loc, vNumElems[i],
+        rewriter.create<arith::MaxSIOp>(
+            loc, zero,
+            rewriter.create<arith::SubIOp>(loc, vSrcShapes[i],
+                                           vSrcOffsets[i])));
+    vSlicehape.push_back(shape);
+    vIntSlicehape.push_back(
+        rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(), shape));
+    totalSize = rewriter.create<arith::MulIOp>(loc, totalSize, shape);
+  }
 
-    SmallVector<Value, 4> vSrcOffsets;
-    auto numElems = triton::gcu::getElemsPerThread(storeType);
-    SmallVector<Value, 4> vNumElems;
-    for (unsigned i = 0; i < rank; ++i)
-      vNumElems.push_back(
-        rewriter.create<arith::ConstantIndexOp>(loc, numElems[i]));
-    auto warpIds = getWarpIds(rewriter, loc, storeType);
-    for (auto dim : nInitStrideDims) {
-      Value offset = rewriter.create<arith::MulIOp>(loc,
-        warpIds[dim], vNumElems[dim]);
-      vSrcOffsets.push_back(offset);
-    }
+  SmallVector<Value, 4> sliceOffsets(rank, zero32);
+  Value diff = zero;
+  for (unsigned i = 0; i < rank; ++i) {
+    auto dim_diff =
+        rewriter.create<arith::SubIOp>(loc, vStoreShapes[i], vSlicehape[i]);
+    diff = rewriter.create<arith::AddIOp>(loc, diff, dim_diff);
+  }
 
-    SmallVector<Value, 4> vSrcStrides;
-    SmallVector<Value, 4> vSrcShapes;
-    for (auto dim : nInitStrideDims) {
-      vSrcStrides.push_back(configStrides[dim]);
-      vSrcShapes.push_back(configShapes[dim]);
-    }
-
-    SmallVector<Value, 4> vStoreShapes;
-    SmallVector<int64_t, 4> storeShapes;
-    for (unsigned i = 0; i < rank; ++i) {
-      storeShapes.push_back(storeValueType.getShape()[i]);
-      vStoreShapes.push_back(rewriter.create<arith::ConstantIndexOp>(
-                             loc, storeShapes[i]));
-    }
-
-    Value reshapeStoreValue = storeValue;
-    if (bReshape) {
-      assert(rank < 4 && "not support stride is no 1 for rank >= 4");
-      vSrcOffsets.push_back(zero);
-      vSrcShapes.push_back(one);
-      vSrcStrides.push_back(one);
-      storeShapes.push_back(1);
-      vStoreShapes.push_back(one);
-      vNumElems.push_back(one);
-      if (bDynamicStride) {
-        order_hint.push_back(1);
-        nInitStrideDims.push_back(rank);
-      } else {
-        for (int i = 0; i < rank; ++i)
-          order_hint[i]--;
-        order_hint.push_back(rank);
-      }
-      rank += 1;
-      auto reshapeStoreType = MemRefType::get(storeShapes, elemType);
-      auto [reshapeStrides, reshapeOffset] =
-                reshapeStoreType.getStridesAndOffset();
-      reshapeStoreValue = rewriter.create<memref::ReinterpretCastOp>(loc,
-        reshapeStoreType, storeValue, reshapeOffset, storeShapes,
-        reshapeStrides);
-    }
-
-    if (rank == 2 && bDynamicStride) {
-      if (order_hint[1] == 1) {
-        order_hint[0] = 0;
-        order_hint[1] = 1;
-        bDynamicStride = false;
-      } else if (order_hint[0] == 1) {
-        order_hint[0] = 1;
-        order_hint[1] = 0;
-        bDynamicStride = false;
-      }
-    }
-
-    SmallVector<Value, 4> vOrderStrides;
-    SmallVector<Value, 4> vOrderShapes;
-    SmallVector<Value, 4> vOrderOffsets;
-    SmallVector<Value, 4> vTransOrder;
-    SmallVector<Value, 4> vTempOrder;
-    if (bDynamicStride) {
-      GetOrderValueByStride(rewriter, loc, nInitStrideDims, vSrcStrides,
-                            vSrcShapes, vSrcOffsets, vOrderStrides,
-                            vOrderShapes, vOrderOffsets, vTempOrder);
-      for (auto updateDim : updateStrideDims) {
-        auto updateStride = rewriter.create<arith::MulIOp>(loc,
-          vOrderStrides[updateDim], vOrderShapes[updateDim]);
-        vOrderStrides.insert(vOrderStrides.begin() + updateDim, updateStride);
-        vSrcStrides.insert(vSrcStrides.begin() + updateDim, updateStride);
-        vOrderShapes.insert(vOrderShapes.begin() + updateDim, one);
-        vSrcShapes.insert(vSrcShapes.begin() + updateDim, one);
-        vOrderOffsets.insert(vOrderOffsets.begin() + updateDim,
-          rewriter.create<arith::IndexCastOp>(loc,
-          rewriter.getI32Type(), zero));
-        vSrcOffsets.insert(vSrcOffsets.begin() + updateDim, zero);
-        vTempOrder.insert(vTempOrder.begin() + updateDim,
-          rewriter.create<arith::ConstantIntOp>(loc, updateDim, 32));
-      }
-      GetTransByOrder(rewriter, loc, vTempOrder, vTransOrder);
-    } else {
-      SmallVector<int32_t, 4> static_order(order_hint.begin(),
-                                           order_hint.end());
-      SmallVector<Value> staticOrderStrides(rank);
-      SmallVector<Value> staticOrderShapes(rank);
-      SmallVector<Value> staticOrderOffsets(rank);
-      for (int i = 0; i < rank; ++i) {
-        staticOrderStrides[static_order[i]] = vSrcStrides[i];
-        staticOrderShapes[static_order[i]] = vSrcShapes[i];
-        staticOrderOffsets[static_order[i]] =
-          rewriter.create<arith::IndexCastOp>(loc,
-          rewriter.getI32Type(), vSrcOffsets[i]);
-      }
-
-      for (int i = 0; i < rank; ++i) {
-        vOrderStrides.push_back(staticOrderStrides[i]);
-        vOrderOffsets.push_back(staticOrderOffsets[i]);
-        vTransOrder.push_back(
-            rewriter.create<arith::ConstantIntOp>(loc, static_order[i], 32));
-      }
-      if (static_order.size() > 0)
-        vOrderShapes.push_back(staticOrderShapes[0]);
-      for (int i = 0; i < rank - 1; ++i) {
-        vOrderShapes.push_back(rewriter.create<arith::DivSIOp>(
-            loc, vOrderStrides[i], vOrderStrides[i + 1]));
-      }
-
-      for (int i = 0; i < rank; ++i) {
-        if (static_order[i] != i) {
-          bStaticTranspose = true;
-          break;
-        }
-      }
-    }
-
-    SmallVector<Value, 4> vSlicehape;
-    SmallVector<Value, 4> vIntSlicehape;
-    Value totalSize = one;
-    for (unsigned i = 0; i < rank; ++i) {
-      auto shape = rewriter.create<arith::MinSIOp>(
-            loc, vNumElems[i],
-            rewriter.create<arith::MaxSIOp>(
-                loc, zero,
-                rewriter.create<arith::SubIOp>(
-                    loc, vSrcShapes[i], vSrcOffsets[i])));
-      vSlicehape.push_back(shape);
-      vIntSlicehape.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getI32Type(), shape));
-      totalSize = rewriter.create<arith::MulIOp>(loc, totalSize, shape);
-    }
-
-    SmallVector<Value, 4> sliceOffsets(rank, zero32);
-    Value diff = zero;
-    for (unsigned i = 0; i < rank; ++i) {
-      auto dim_diff = rewriter.create<arith::SubIOp>(loc,
-                                            vStoreShapes[i], vSlicehape[i]);
-      diff = rewriter.create<arith::AddIOp>(loc, diff, dim_diff);
-    }
-
-    auto resultType = MemRefType::get(
+  auto resultType = MemRefType::get(
       SmallVector<int64_t>(rank, ShapedType::kDynamic), elemType);
-    auto dst = rewriter.create<memref::ReinterpretCastOp>(
-        loc, resultType, buffer, zero, vOrderShapes, vOrderStrides);
+  auto dst = rewriter.create<memref::ReinterpretCastOp>(
+      loc, resultType, buffer, zero, vOrderShapes, vOrderStrides);
 
-    auto isNeedSlice = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::sgt, diff, zero);
+  auto isNeedSlice = rewriter.create<arith::CmpIOp>(
+      loc, arith::CmpIPredicate::sgt, diff, zero);
 
-    auto isNotZero = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::ne, totalSize, zero);
+  auto isNotZero = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne,
+                                                  totalSize, zero);
 
-    Value isDynamicTrans = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::ne, vTransOrder[0],
-        rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(), zero));
-    for (unsigned i = 1; i < rank; ++i) {
-      auto isDimTrans = rewriter.create<arith::CmpIOp>(
+  Value isDynamicTrans = rewriter.create<arith::CmpIOp>(
+      loc, arith::CmpIPredicate::ne, vTransOrder[0],
+      rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(), zero));
+  for (unsigned i = 1; i < rank; ++i) {
+    auto isDimTrans = rewriter.create<arith::CmpIOp>(
         loc, arith::CmpIPredicate::ne, vTransOrder[i],
         rewriter.create<arith::ConstantIntOp>(loc, i, 32));
-      isDynamicTrans = rewriter.create<arith::OrIOp>(loc,
-        isDynamicTrans, isDimTrans);
-    }
+    isDynamicTrans =
+        rewriter.create<arith::OrIOp>(loc, isDynamicTrans, isDimTrans);
+  }
 
-    if (bDynamicStride) {
-      auto isTrans =
-          rewriter.create<arith::AndIOp>(loc, isDynamicTrans, isNotZero);
-      auto isSlice =
-          rewriter.create<arith::AndIOp>(loc, isNeedSlice, isNotZero);
-      rewriter.create<scf::IfOp>(loc, isTrans,
-      [&](OpBuilder &builder, Location loc) {
-        builder.create<memref_ext::TransposeDesliceStartOp>(
-            loc, dst, reshapeStoreValue, vTransOrder, vOrderOffsets,
-            tag.getTag(), ValueRange{tag.getIdx()});
-        builder.create<scf::YieldOp>(loc);
-      },
-      [&](OpBuilder &builder, Location loc) {
-        builder.create<scf::IfOp>(loc, isSlice,
-          [&](OpBuilder &childBuilder, Location loc) {
-            childBuilder.create<memref_ext::SliceDesliceStartOp>(
-              loc, dst, reshapeStoreValue, sliceOffsets, vIntSlicehape,
-              vOrderOffsets, tag.getTag(), ValueRange{tag.getIdx()});
-            childBuilder.create<scf::YieldOp>(loc);
-          },
-          [&](OpBuilder &childBuilder, Location loc) {
-            childBuilder.create<scf::IfOp>(loc, isNotZero,
-              [&](OpBuilder &child2Builder, Location loc) {
-                child2Builder.create<memref_ext::DesliceStartOp>(
-                  loc, dst, reshapeStoreValue, vOrderOffsets,
-                  tag.getTag(), ValueRange{tag.getIdx()});
-                child2Builder.create<scf::YieldOp>(loc);
-              });
-              childBuilder.create<scf::YieldOp>(loc);
-          });
-        builder.create<scf::YieldOp>(loc);
-      });
-    } else if (bStaticTranspose) {
-      rewriter.create<scf::IfOp>(loc, isNotZero,
-      [&](OpBuilder &build, Location loc) {
-        build.create<memref_ext::TransposeDesliceStartOp>(
-            loc, dst, reshapeStoreValue, vTransOrder, vOrderOffsets,
-            tag.getTag(), ValueRange{tag.getIdx()});
-        build.create<scf::YieldOp>(loc);
-      });
-    } else {
-      auto isSlice =
-          rewriter.create<arith::AndIOp>(loc, isNeedSlice, isNotZero);
-      rewriter.create<scf::IfOp>(loc, isSlice,
+  if (bDynamicStride) {
+    auto isTrans =
+        rewriter.create<arith::AndIOp>(loc, isDynamicTrans, isNotZero);
+    auto isSlice = rewriter.create<arith::AndIOp>(loc, isNeedSlice, isNotZero);
+    rewriter.create<scf::IfOp>(
+        loc, isTrans,
         [&](OpBuilder &builder, Location loc) {
-          builder.create<memref_ext::SliceDesliceStartOp>(
-            loc, dst, reshapeStoreValue, sliceOffsets, vIntSlicehape,
-            vOrderOffsets, tag.getTag(), ValueRange{tag.getIdx()});
+          builder.create<memref_ext::TransposeDesliceStartOp>(
+              loc, dst, reshapeStoreValue, vTransOrder, vOrderOffsets,
+              tag.getTag(), ValueRange{tag.getIdx()});
           builder.create<scf::YieldOp>(loc);
         },
         [&](OpBuilder &builder, Location loc) {
-          builder.create<scf::IfOp>(loc, isNotZero,
-          [&](OpBuilder &childBuilder, Location loc) {
-            childBuilder.create<memref_ext::DesliceStartOp>(
-                loc, dst, reshapeStoreValue, vOrderOffsets,
-                tag.getTag(), ValueRange{tag.getIdx()});
-            childBuilder.create<scf::YieldOp>(loc);
-          });
+          builder.create<scf::IfOp>(
+              loc, isSlice,
+              [&](OpBuilder &childBuilder, Location loc) {
+                childBuilder.create<memref_ext::SliceDesliceStartOp>(
+                    loc, dst, reshapeStoreValue, sliceOffsets, vIntSlicehape,
+                    vOrderOffsets, tag.getTag(), ValueRange{tag.getIdx()});
+                childBuilder.create<scf::YieldOp>(loc);
+              },
+              [&](OpBuilder &childBuilder, Location loc) {
+                childBuilder.create<scf::IfOp>(
+                    loc, isNotZero,
+                    [&](OpBuilder &child2Builder, Location loc) {
+                      child2Builder.create<memref_ext::DesliceStartOp>(
+                          loc, dst, reshapeStoreValue, vOrderOffsets,
+                          tag.getTag(), ValueRange{tag.getIdx()});
+                      child2Builder.create<scf::YieldOp>(loc);
+                    });
+                childBuilder.create<scf::YieldOp>(loc);
+              });
           builder.create<scf::YieldOp>(loc);
         });
-    }
+  } else if (bStaticTranspose) {
+    rewriter.create<scf::IfOp>(
+        loc, isNotZero, [&](OpBuilder &build, Location loc) {
+          build.create<memref_ext::TransposeDesliceStartOp>(
+              loc, dst, reshapeStoreValue, vTransOrder, vOrderOffsets,
+              tag.getTag(), ValueRange{tag.getIdx()});
+          build.create<scf::YieldOp>(loc);
+        });
+  } else {
+    auto isSlice = rewriter.create<arith::AndIOp>(loc, isNeedSlice, isNotZero);
+    rewriter.create<scf::IfOp>(
+        loc, isSlice,
+        [&](OpBuilder &builder, Location loc) {
+          builder.create<memref_ext::SliceDesliceStartOp>(
+              loc, dst, reshapeStoreValue, sliceOffsets, vIntSlicehape,
+              vOrderOffsets, tag.getTag(), ValueRange{tag.getIdx()});
+          builder.create<scf::YieldOp>(loc);
+        },
+        [&](OpBuilder &builder, Location loc) {
+          builder.create<scf::IfOp>(
+              loc, isNotZero, [&](OpBuilder &childBuilder, Location loc) {
+                childBuilder.create<memref_ext::DesliceStartOp>(
+                    loc, dst, reshapeStoreValue, vOrderOffsets, tag.getTag(),
+                    ValueRange{tag.getIdx()});
+                childBuilder.create<scf::YieldOp>(loc);
+              });
+          builder.create<scf::YieldOp>(loc);
+        });
+  }
   return totalSize;
 }
 
 void WaitGcuLoadStore(OpBuilder &rewriter, Location loc,
                       triton::gcu::TagInfo tag, Value totalSize) {
-  rewriter.create<memref::DmaWaitOp>(
-      loc, tag.getTag(), ValueRange{tag.getIdx()}, totalSize);
+  rewriter.create<memref::DmaWaitOp>(loc, tag.getTag(),
+                                     ValueRange{tag.getIdx()}, totalSize);
 }
 
-void moveDeallocOp(ConversionPatternRewriter& rewriter,
-                   Value v, Operation* pos, size_t depth) {
-  if (depth > 1) return;
+void moveDeallocOp(ConversionPatternRewriter &rewriter, Value v, Operation *pos,
+                   size_t depth) {
+  if (depth > 1)
+    return;
 
-  Operation* allocOp = v.getDefiningOp();
+  Operation *allocOp = v.getDefiningOp();
   if (llvm::isa<mlir::UnrealizedConversionCastOp>(allocOp)) {
     // not define in current block;
     return;
   }
   unsigned operandIdx = cast<OpResult>(v).getResultNumber();
   while (allocOp && !mlir::isa<memref::AllocOp>(allocOp)) {
-    mlir::TypeSwitch<mlir::Operation*>(allocOp)
-      .Case<memref::ReinterpretCastOp,
-            memref::MemorySpaceCastOp>([&](auto castOp){
-        allocOp = castOp.getSource().getDefiningOp();
-        operandIdx = cast<OpResult>(castOp.getSource()).getResultNumber();
-      })
-      .Case<scf::ForOp>([&](auto forOp) {
-        auto yieldOp =
-            llvm::cast<scf::YieldOp>(forOp.getBody()->getTerminator());
-        Value operand = yieldOp.getOperands()[operandIdx];
-        if (rewriter.getRemappedValue(operand)) {
-          operand = rewriter.getRemappedValue(operand);
-        }
-        allocOp = operand.getDefiningOp();
-        operandIdx = cast<OpResult>(operand).getResultNumber();
-
-        Value initValue = forOp.getInitArgs()[operandIdx];
-        if (rewriter.getRemappedValue(initValue)) {
-          initValue = rewriter.getRemappedValue(initValue);
-        }
-        moveDeallocOp(rewriter, initValue, pos, ++depth);
-      })
-      .Case<scf::IfOp>([&](auto ifOp) {
-        auto thenYieldOp = ifOp.thenYield();
-        Value operand = thenYieldOp.getOperands()[operandIdx];
-        if (rewriter.getRemappedValue(operand)) {
-          operand = rewriter.getRemappedValue(operand);
-        }
-        allocOp = operand.getDefiningOp();
-        operandIdx = cast<OpResult>(operand).getResultNumber();
-
-        if (ifOp.getNumRegions() > 1) {
-          auto elseYieldOp = ifOp.elseYield();
-          operand = elseYieldOp.getOperands()[operandIdx];
+    mlir::TypeSwitch<mlir::Operation *>(allocOp)
+        .Case<memref::ReinterpretCastOp, memref::MemorySpaceCastOp>(
+            [&](auto castOp) {
+              allocOp = castOp.getSource().getDefiningOp();
+              operandIdx = cast<OpResult>(castOp.getSource()).getResultNumber();
+            })
+        .Case<scf::ForOp>([&](auto forOp) {
+          auto yieldOp =
+              llvm::cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+          Value operand = yieldOp.getOperands()[operandIdx];
           if (rewriter.getRemappedValue(operand)) {
             operand = rewriter.getRemappedValue(operand);
           }
-          moveDeallocOp(rewriter, operand, pos, ++depth);
-        }
-      })
-      .Default([&](auto op) {
-        allocOp = nullptr;
-      });
-  }
-  if (!allocOp) llvm_unreachable("can't find allocation position");
+          allocOp = operand.getDefiningOp();
+          operandIdx = cast<OpResult>(operand).getResultNumber();
 
-  Operation* deallocOp = nullptr;
-  for (const auto& user : allocOp->getUsers()) {
+          Value initValue = forOp.getInitArgs()[operandIdx];
+          if (rewriter.getRemappedValue(initValue)) {
+            initValue = rewriter.getRemappedValue(initValue);
+          }
+          moveDeallocOp(rewriter, initValue, pos, ++depth);
+        })
+        .Case<scf::IfOp>([&](auto ifOp) {
+          auto thenYieldOp = ifOp.thenYield();
+          Value operand = thenYieldOp.getOperands()[operandIdx];
+          if (rewriter.getRemappedValue(operand)) {
+            operand = rewriter.getRemappedValue(operand);
+          }
+          allocOp = operand.getDefiningOp();
+          operandIdx = cast<OpResult>(operand).getResultNumber();
+
+          if (ifOp.getNumRegions() > 1) {
+            auto elseYieldOp = ifOp.elseYield();
+            operand = elseYieldOp.getOperands()[operandIdx];
+            if (rewriter.getRemappedValue(operand)) {
+              operand = rewriter.getRemappedValue(operand);
+            }
+            moveDeallocOp(rewriter, operand, pos, ++depth);
+          }
+        })
+        .Default([&](auto op) { allocOp = nullptr; });
+  }
+  if (!allocOp)
+    llvm_unreachable("can't find allocation position");
+
+  Operation *deallocOp = nullptr;
+  for (const auto &user : allocOp->getUsers()) {
     if (llvm::isa<memref::DeallocOp>(user)) {
       deallocOp = user;
       break;
@@ -2057,16 +2045,16 @@ void moveDeallocOp(ConversionPatternRewriter& rewriter,
 namespace triton {
 namespace gcu {
 
-bool get_bool_env(const char* name) {
-    const char* value = std::getenv(name);
-    if (value == nullptr) {
-        return false;
-    }
-    std::string str_value(value);
-    std::transform(str_value.begin(), str_value.end(), str_value.begin(),
-                   ::tolower);
-    return (str_value == "true" || str_value == "1" || str_value == "on" ||
-            str_value == "yes");
+bool get_bool_env(const char *name) {
+  const char *value = std::getenv(name);
+  if (value == nullptr) {
+    return false;
+  }
+  std::string str_value(value);
+  std::transform(str_value.begin(), str_value.end(), str_value.begin(),
+                 ::tolower);
+  return (str_value == "true" || str_value == "1" || str_value == "on" ||
+          str_value == "yes");
 }
 
 Value createConstantZero(OpBuilder &builder, Location loc, Type elemType) {
@@ -2178,7 +2166,6 @@ Value createConstantInf(OpBuilder &builder, Location loc, Type elemType,
   return builder.create<arith::ConstantFloatOp>(
       loc, dyn_cast<FloatType>(elemType), APFloat::getInf(*sem, isNegative));
 }
-
 
 SmallVector<unsigned> getWarpsPerCTA(Attribute layout) {
   if (auto blockEnc = dyn_cast<triton::gpu::BlockedEncodingAttr>(layout)) {
@@ -2402,8 +2389,7 @@ Value TritonGCUBuilder::tarValue(int64_t v) {
   return builder
       ->create<mlir::gcu::TarInitOp>(
           loc, getTarType(),
-          builder->create<arith::ConstantIntOp>(loc, v, 64)
-              .getResult())
+          builder->create<arith::ConstantIntOp>(loc, v, 64).getResult())
       .getOut();
 }
 
@@ -2427,9 +2413,7 @@ Value TritonGCUBuilder::tarStride(VectorType type, int64_t stride) {
   return builder
       ->create<mlir::gcu::TarInitOp>(
           loc, getTarType(),
-          builder
-              ->create<arith::ConstantIntOp>(loc, stride, 64)
-              .getResult())
+          builder->create<arith::ConstantIntOp>(loc, stride, 64).getResult())
       .getOut();
 }
 
@@ -2449,19 +2433,21 @@ void TritonGCUBuilder::tarStore(Value v, Value &tarAddr,
                 .getDstAddr();
 }
 
- Value TritonGCUBuilder::tarGather(VectorType type,
-    Value &tarAddr, Value num, Value other, Value mask) {
-  auto tarGatherOp = builder->create<mlir::gcu::TarGatherOp>(loc,
-    TypeRange{type, getTarType()}, tarAddr, num, other, mask);
+Value TritonGCUBuilder::tarGather(VectorType type, Value &tarAddr, Value num,
+                                  Value other, Value mask) {
+  auto tarGatherOp = builder->create<mlir::gcu::TarGatherOp>(
+      loc, TypeRange{type, getTarType()}, tarAddr, num, other, mask);
   tarAddr = tarGatherOp.getDstAddr();
   return tarGatherOp.getV();
- }
+}
 
- void TritonGCUBuilder::tarScatter(
-      Value &tarAddr, Value v, Value num, Value mask) {
-  tarAddr = builder->create<mlir::gcu::TarScatterOp>(loc, getTarType(),
-            tarAddr, v, num, mask).getDstAddr();
- }
+void TritonGCUBuilder::tarScatter(Value &tarAddr, Value v, Value num,
+                                  Value mask) {
+  tarAddr = builder
+                ->create<mlir::gcu::TarScatterOp>(loc, getTarType(), tarAddr, v,
+                                                  num, mask)
+                .getDstAddr();
+}
 
 void TritonGCUBuilder::tarJump(Value &tarAddr, const Value &tarValue) {
   tarAddr = builder->create<arith::AddIOp>(loc, tarAddr, tarValue);

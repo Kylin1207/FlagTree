@@ -19,7 +19,7 @@
 include "mlir/Pass/PassBase.td"
 
 //===----------------------------------------------------------------------===//
-// TritonToGCU 
+// TritonToGCU
 //===----------------------------------------------------------------------===//
 def ConvertTritonToGCUPass: Pass<"convert-triton-to-gcu", "gpu::GPUModuleOp"> {
   let summary = "Convert triton ir to gcu operations.";
@@ -152,5 +152,5 @@ def TritonGPUToTritonGCUPass: Pass<"triton-gpu-to-triton-gcu", "gpu::GPUModuleOp
   let options = [
   ];
 }
- 
+
 #endif // GCU_CONVERSION_PASSES

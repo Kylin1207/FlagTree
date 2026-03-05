@@ -380,4 +380,3 @@ def TritonGCU_MaskedStoreOp : TTGCU_Op<"maskedstore", [
 }
 
 #endif // TRITONGCU_OPS
-

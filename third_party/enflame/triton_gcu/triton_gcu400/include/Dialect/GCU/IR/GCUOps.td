@@ -1279,4 +1279,3 @@ def GCU_AtomicCASOp : GCU_Op<"atomic_cas", []> {
 }
 
 #endif // GCU_OPS
-
