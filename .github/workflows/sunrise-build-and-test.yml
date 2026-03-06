@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   sunrise-build-and-test:
-    runs-on: sunrise
+    runs-on: flagtree-sunrise
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Setup environment
