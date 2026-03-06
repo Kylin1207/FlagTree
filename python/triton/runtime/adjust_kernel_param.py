@@ -476,8 +476,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     for n in ast.walk(hook_ast):
                         if not isinstance(n, ast.FunctionDef):
                             continue
-                        for desc_name, desc_block_shapes in self._parse_hook_block_shape(n).items():
-                            desc_block_shapes[desc_name] = desc_block_shapes
+                        desc_block_shapes.update(self._parse_hook_block_shape(n))
                         break
             except Exception:
                 pass
@@ -493,11 +492,11 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         for tma_info in self.tma_load_assignments:
             desc_name = tma_info["desc_name"]
             target_var = tma_info["var_name"]
-            block_list = list[str](desc_block_shapes.get(desc_name) or [])
-            if target_var in transpose_used_vars and len(block_list) >= 2:
-                block_list[-1], block_list[-2] = block_list[-2], block_list[-1]
-            if block_list:
-                tma_map.setdefault(desc_name, set()).add(tuple(block_list))
+            block_shape = list[str](desc_block_shapes.get(desc_name) or [])
+            if target_var in transpose_used_vars and len(block_shape) >= 2:
+                block_shape[-1], block_shape[-2] = block_shape[-2], block_shape[-1]
+            if block_shape:
+                tma_map.setdefault(desc_name, set()).add(tuple(block_shape))
         return tma_map, desc_block_shapes
 
 
