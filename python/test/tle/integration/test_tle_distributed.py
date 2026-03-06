@@ -20,6 +20,7 @@ import triton.experimental.tle as tled
 import triton.experimental.tle.language.gpu as tleg
 
 BLOCK_CLUSTER_MESH = tled.device_mesh({"block_cluster": [("cluster_x", 2)]})
+BLOCK_CLUSTER_MESH_8 = tled.device_mesh({"block_cluster": [("cluster_x", 8)]})
 BLOCK_CLUSTER_MESH_2X2 = tled.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})
 BLOCK_CLUSTER_SUBMESH_ROW0 = BLOCK_CLUSTER_MESH_2X2[0, :]
 BLOCK_CLUSTER_SUBMESH_ROW1 = BLOCK_CLUSTER_MESH_2X2[1, :]
@@ -257,6 +258,50 @@ def _submesh_barrier_lowering_kernel(out_ptr, mesh: tl.constexpr, BLOCK: tl.cons
     vals = tl.full((BLOCK, ), pid, tl.int32)
     tled.distributed_barrier(mesh)
     tl.store(out_ptr + pid * BLOCK + offs, vals)
+
+
+@triton.jit
+def _remote_rank0_dsmem_atomic_add_kernel(out_ptr, mesh: tl.constexpr):
+    rank = tled.shard_id(mesh, "cluster_x")
+    idx = tl.arange(0, 1)
+    smem = tleg.alloc([1], dtype=tl.int32, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
+    counter_ptr = tleg.local_ptr(smem, (idx, ))
+
+    if rank == 0:
+        tl.store(counter_ptr, 0)
+    tled.distributed_barrier(mesh)
+
+    remote_rank0 = tled.remote(smem, 0, scope=mesh)
+    remote_ptr = tleg.local_ptr(remote_rank0, (idx, ))
+    tl.atomic_add(remote_ptr, 1, sem="relaxed", scope="cta")
+    tled.distributed_barrier(mesh)
+
+    if rank == 0:
+        counter = tl.load(counter_ptr)
+        tl.store(out_ptr + idx, counter)
+
+
+@triton.jit
+def _remote_scan_shared_scratch_kernel(out_ptr, mesh: tl.constexpr, BLOCK: tl.constexpr):
+    rank = tled.shard_id(mesh, "cluster_x")
+    offs = tl.arange(0, BLOCK)
+
+    smem = tleg.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tleg.smem, nv_mma_shared_layout=False)
+    local_ptr = tleg.local_ptr(smem, (offs, ))
+    if rank == 0:
+        tl.store(local_ptr, offs)
+    tled.distributed_barrier(mesh)
+
+    if rank == 0:
+        vals = tl.load(local_ptr)
+        prefix = tl.cumsum(vals, axis=0)
+        tl.store(local_ptr, prefix)
+    tled.distributed_barrier(mesh)
+
+    remote_rank0 = tled.remote(smem, 0, scope=mesh)
+    remote_ptr = tleg.local_ptr(remote_rank0, (offs, ))
+    remote_vals = tl.load(remote_ptr)
+    tl.store(out_ptr + rank * BLOCK + offs, remote_vals)
 
 
 @triton.jit
@@ -1016,6 +1061,46 @@ class TestTLEDistributed:
             out, mesh=submesh, BLOCK=block, num_ctas=1, num_warps=4
         )
         torch.cuda.synchronize()
+
+    def test_remote_rank0_dsmem_atomic_add_lowering_cluster8(self):
+        out = torch.empty((1, ), device="cuda", dtype=torch.int32)
+        compiled = _remote_rank0_dsmem_atomic_add_kernel.warmup(
+            out,
+            mesh=BLOCK_CLUSTER_MESH_8,
+            grid=(1, ),
+            num_ctas=1,
+            num_warps=4,
+        )
+        assert compiled.metadata.cluster_dims == (8, 1, 1)
+        ptx = compiled.asm["ptx"]
+        assert "atom.shared::cluster.cta.relaxed.add.u32" in ptx
+        assert "atom.shared.shared::cluster" not in ptx
+
+    def test_remote_rank0_dsmem_atomic_add_runtime_cluster8_stable(self):
+        out = torch.empty((1, ), device="cuda", dtype=torch.int32)
+        for _ in range(512):
+            _remote_rank0_dsmem_atomic_add_kernel[(1, )](
+                out,
+                mesh=BLOCK_CLUSTER_MESH_8,
+                num_ctas=1,
+                num_warps=4,
+            )
+            torch.cuda.synchronize()
+            assert int(out.item()) == 8
+
+    def test_remote_scan_shared_scratch_compile_regression_cluster8(self):
+        block = 64
+        out = torch.empty((8 * block, ), device="cuda", dtype=torch.int32)
+        compiled = _remote_scan_shared_scratch_kernel.warmup(
+            out,
+            mesh=BLOCK_CLUSTER_MESH_8,
+            BLOCK=block,
+            grid=(1, ),
+            num_ctas=1,
+            num_warps=4,
+        )
+        assert compiled.metadata.cluster_dims == (8, 1, 1)
+        assert "\"tt.scan\"" in compiled.asm["ttgir"]
 
     def test_distributed_barrier_multiblock_counter(self):
         grid = 2

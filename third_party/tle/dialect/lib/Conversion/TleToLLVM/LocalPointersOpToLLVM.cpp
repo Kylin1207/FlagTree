@@ -59,8 +59,13 @@ struct LocalPointersOpConversion
     };
 
     auto memDescTy = cast<ttg::MemDescType>(op.getSrc().getType());
-    auto resultTy = cast<RankedTensorType>(op.getResult().getType());
-    auto ptrTy = cast<triton::PointerType>(resultTy.getElementType());
+    auto resultTensorTy = dyn_cast<RankedTensorType>(op.getResult().getType());
+    auto resultPtrTy = dyn_cast<triton::PointerType>(op.getResult().getType());
+    if (!resultTensorTy && !resultPtrTy)
+      return reportFailure("local_pointers result must be tensor<ptr> or ptr");
+    auto ptrTy = resultTensorTy
+                     ? cast<triton::PointerType>(resultTensorTy.getElementType())
+                     : resultPtrTy;
     auto llvmElemTy = typeConverter->convertType(memDescTy.getElementType());
     auto llvmPtrTy =
         cast<LLVM::LLVMPointerType>(typeConverter->convertType(ptrTy));
@@ -83,21 +88,28 @@ struct LocalPointersOpConversion
     auto sharedEnc = cast<ttg::SharedEncodingTrait>(memDescTy.getEncoding());
     auto kReg = str_attr("register");
     auto kOffset = str_attr("offset");
-    if (!resultTy.getEncoding())
-      return reportFailure("local_pointers result must carry an encoding");
-
-    LinearLayout regLayout = ttg::toLinearLayout(resultTy);
+    LinearLayout regLayout;
+    if (resultTensorTy) {
+      if (!resultTensorTy.getEncoding())
+        return reportFailure("tensor local_pointers result must carry an encoding");
+      regLayout = ttg::toLinearLayout(resultTensorTy);
+    }
     for (Value operand : op.getIndices()) {
-      auto idxTy = dyn_cast<RankedTensorType>(operand.getType());
-      if (!idxTy)
-        return reportFailure("indices must be ranked tensors");
-      if (resultTy.getEncoding() && idxTy.getEncoding() &&
-          resultTy.getEncoding() != idxTy.getEncoding())
-        return reportFailure(
-            "indices tensor encoding must match result encoding");
+      if (resultTensorTy) {
+        auto idxTy = dyn_cast<RankedTensorType>(operand.getType());
+        if (!idxTy)
+          return reportFailure("tensor result requires ranked-tensor indices");
+        if (resultTensorTy.getEncoding() && idxTy.getEncoding() &&
+            resultTensorTy.getEncoding() != idxTy.getEncoding())
+          return reportFailure(
+              "indices tensor encoding must match result encoding");
+      } else if (!isa<IntegerType>(operand.getType())) {
+        return reportFailure("scalar result requires scalar integer indices");
+      }
     }
 
-    SmallVector<Value> outVals(regLayout.getInDimSize(kReg), Value());
+    const size_t outSize = resultTensorTy ? regLayout.getInDimSize(kReg) : 1;
+    SmallVector<Value> outVals(outSize, Value());
 
     TritonLLVMOpBuilder b(loc, rewriter);
     int elemBits = llvmElemTy.getIntOrFloatBitWidth();
@@ -123,11 +135,18 @@ struct LocalPointersOpConversion
     SmallVector<SmallVector<Value>> indexElems;
     indexElems.reserve(indexVals.size());
     for (Value indexVal : indexVals) {
-      auto elems = unpackLLElements(loc, indexVal, rewriter);
-      if (elems.size() != outVals.size())
-        return reportFailure(
-            "indices tensors must match local_pointers result shape");
-      indexElems.push_back(std::move(elems));
+      if (resultTensorTy) {
+        auto elems = unpackLLElements(loc, indexVal, rewriter);
+        if (elems.size() != outVals.size())
+          return reportFailure(
+              "indices tensors must match local_pointers result shape");
+        indexElems.push_back(std::move(elems));
+      } else {
+        Value scalar = ensureI32(indexVal);
+        if (!scalar)
+          return reportFailure("scalar indices must lower to i32 values");
+        indexElems.push_back(SmallVector<Value>{scalar});
+      }
     }
 
     for (size_t idx = 0; idx < outVals.size(); ++idx) {
@@ -177,9 +196,13 @@ struct LocalPointersOpConversion
       outVals[idx] = b.bitcast(advanced, llvmPtrTy);
     }
 
-    Value result =
-        packLLElements(loc, typeConverter, outVals, rewriter, resultTy);
-    rewriter.replaceOp(op, result);
+    if (resultTensorTy) {
+      Value result = packLLElements(loc, typeConverter, outVals, rewriter,
+                                    resultTensorTy);
+      rewriter.replaceOp(op, result);
+    } else {
+      rewriter.replaceOp(op, outVals.front());
+    }
     return success();
   }
 

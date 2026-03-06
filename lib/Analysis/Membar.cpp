@@ -317,11 +317,14 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
       isWarpSync = mlir::isCvtWarpSync(srcLayout, dstLayout);
     }
 
-    if (!curBlockInfo.syncReadIntervals.empty() ||
-        !curBlockInfo.syncWriteIntervals.empty()) {
-      llvm::report_fatal_error(
-          "scratch buffer operations should not have any shared memory "
-          "dependencies");
+    // Some ops that allocate scratch buffers (e.g. scan/reduce paths lowered
+    // from TLE kernels) may also carry explicit shared-memory side effects.
+    // Treat these effects conservatively instead of aborting compilation.
+    if ((!curBlockInfo.syncReadIntervals.empty() ||
+         !curBlockInfo.syncWriteIntervals.empty()) &&
+        shouldPrintMembar()) {
+      llvm::errs() << "[membar] scratch op has explicit shared deps: "
+                   << op->getName() << " @ " << op->getLoc() << "\n";
     }
     auto interval = allocation->getAllocatedInterval(scratchBufferId);
     curBlockInfo.syncWriteIntervals[interval].insert(op);

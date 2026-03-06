@@ -93,7 +93,6 @@ docs/sg_execution_times.rst
 # Agent
 AGENTS.md
 build-nvidia.sh
-skills
 /tmp
 
 # Test

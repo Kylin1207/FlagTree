@@ -297,7 +297,13 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
                 .o("shared", !useCluster)
                 .v(vec, /*predicate=*/vec > 1)
                 .b(elemBitwidth);
-  auto *ptrOpr = builder.newAddrOperand(ptr, "l");
+  Value addrOperand = ptr;
+  const char *addrConstraint = "l";
+  if (useCluster && isa<LLVM::LLVMPointerType>(addrOperand.getType())) {
+    addrOperand = rewriter.create<LLVM::PtrToIntOp>(loc, i32_ty, addrOperand);
+    addrConstraint = "r";
+  }
+  auto *ptrOpr = builder.newAddrOperand(addrOperand, addrConstraint);
 
   if (isConstantTruePred(pred) && !useCluster) {
     b.store(val, ptr, /*align=*/vec * elemBitwidth / 8);
@@ -424,7 +430,7 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
                 .b(elemBitwidth);
 
   Value load;
-  if (isConstantTruePred(pred) && !useCluster) {
+  if (isConstantTruePred(pred)) {
     Type resultTy = vec == 1 ? Type(int_ty(elemBitwidth))
                              : Type(vec_ty(int_ty(elemBitwidth), vec));
     load = b.load(resultTy, ptr, /*align=*/vec * elemBitwidth / 8);
@@ -439,10 +445,28 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
     }
   } else {
     std::string elemConstraint = "=" + getConstraintForBitwidth(elemBitwidth);
-    auto *outOpr = vec == 1 ? builder.newOperand(elemConstraint)
-                            : builder.newListOperand(vec, elemConstraint);
-    ld(outOpr, builder.newAddrOperand(ptr, "l"))
-        .predicate(pred, "b");
+    const bool predIsConstTrue = isConstantTruePred(pred);
+    PTXBuilder::Operand *outOpr = nullptr;
+    if (vec == 1) {
+      outOpr = builder.newOperand(elemConstraint, !predIsConstTrue);
+    } else if (predIsConstTrue) {
+      outOpr = builder.newListOperand(vec, elemConstraint);
+    } else {
+      // Initialize predicated outputs to avoid ptxas mis-optimizing undefined
+      // destination registers.
+      outOpr = builder.newListOperand();
+      for (unsigned i = 0; i < vec; ++i)
+        outOpr->listAppend(builder.newOperand(elemConstraint, /*init=*/true));
+    }
+    Value addrOperand = ptr;
+    const char *addrConstraint = "l";
+    if (useCluster && isa<LLVM::LLVMPointerType>(addrOperand.getType())) {
+      addrOperand = rewriter.create<LLVM::PtrToIntOp>(loc, i32_ty, addrOperand);
+      addrConstraint = "r";
+    }
+    auto &ldExec = ld(outOpr, builder.newAddrOperand(addrOperand, addrConstraint));
+    if (!predIsConstTrue)
+      ldExec.predicate(pred, "b");
 
     Type resultTy =
         vec == 1

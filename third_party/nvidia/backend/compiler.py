@@ -471,11 +471,13 @@ class CUDABackend(BaseBackend):
             fsrc.flush()
             fbin = fsrc.name + '.o'
 
+            disable_ptxas_opt = knobs.nvidia.disable_ptxas_opt
+
             debug_info = []
             if knobs.compilation.disable_line_info:
                 # This option is ignored if used without -lineinfo
                 debug_info += ["-lineinfo", "-suppress-debug-info"]
-            elif knobs.nvidia.disable_ptxas_opt:
+            elif disable_ptxas_opt:
                 # Synthesize complete debug info
                 debug_info += ["-g"]
             else:
@@ -485,8 +487,8 @@ class CUDABackend(BaseBackend):
             fmad = [] if opt.enable_fp_fusion else ["--fmad=false"]
             arch = sm_arch_from_capability(capability)
 
-            # Disable ptxas optimizations if requested
-            disable_opt = ['--opt-level', '0'] if knobs.nvidia.disable_ptxas_opt else []
+            # Disable ptxas optimizations if requested.
+            disable_opt = ['--opt-level', '0'] if disable_ptxas_opt else []
 
             # Accept more ptxas options if provided
             ptx_extra_options = opt.ptx_options.split(" ") if opt.ptx_options else []

@@ -63,11 +63,14 @@ LogicalResult LocalPointersOp::verify() {
   if (!memDescTy)
     return emitOpError() << "expects src operand to be a ttg.memdesc";
 
-  auto resultTy = dyn_cast<RankedTensorType>(getResult().getType());
-  if (!resultTy)
-    return emitOpError() << "expects result to be a ranked tensor";
+  auto resultTensorTy = dyn_cast<RankedTensorType>(getResult().getType());
+  auto resultPtrTy = dyn_cast<triton::PointerType>(getResult().getType());
+  if (!resultTensorTy && !resultPtrTy)
+    return emitOpError() << "expects result to be either tensor<tt.ptr<...>> or tt.ptr";
 
-  auto ptrTy = dyn_cast<triton::PointerType>(resultTy.getElementType());
+  auto ptrTy = resultTensorTy
+                   ? dyn_cast<triton::PointerType>(resultTensorTy.getElementType())
+                   : resultPtrTy;
   if (!ptrTy)
     return emitOpError() << "expects result element type to be tt.ptr";
 
@@ -80,36 +83,48 @@ LogicalResult LocalPointersOp::verify() {
   if (ptrTy.getAddressSpace() != kSharedMemoryAddressSpace)
     return emitOpError() << "expects pointers to live in shared memory";
 
-  auto resultShape = resultTy.getShape();
-  Attribute resultEncoding = resultTy.getEncoding();
-
   auto indices = getIndices();
   if (indices.size() != memDescTy.getShape().size())
     return emitOpError() << "expects indices count to match buffer rank";
 
-  ArrayRef<int64_t> indexShape;
-  for (Value val : indices) {
-    auto indexTy = dyn_cast<RankedTensorType>(val.getType());
-    if (!indexTy)
+  if (resultTensorTy) {
+    auto resultShape = resultTensorTy.getShape();
+    Attribute resultEncoding = resultTensorTy.getEncoding();
+
+    ArrayRef<int64_t> indexShape;
+    for (Value val : indices) {
+      auto indexTy = dyn_cast<RankedTensorType>(val.getType());
+      if (!indexTy)
+        return emitOpError()
+               << "tensor result expects indices to be ranked tensors";
+      if (!indexTy.getElementType().isInteger())
+        return emitOpError()
+               << "expects indices return tensors to have integer element types";
+      if (indexShape.empty())
+        indexShape = indexTy.getShape();
+      else if (indexTy.getShape() != indexShape)
+        return emitOpError()
+               << "expects indices return tensors to have identical shapes";
+      if (resultEncoding && indexTy.getEncoding() &&
+          resultEncoding != indexTy.getEncoding())
+        return emitOpError()
+               << "expects indices return tensors to match result encoding";
+    }
+
+    if (indexShape != resultShape)
       return emitOpError()
-             << "expects indices return values to be ranked tensors";
-    if (!indexTy.getElementType().isInteger())
-      return emitOpError()
-             << "expects indices return tensors to have integer element types";
-    if (indexShape.empty())
-      indexShape = indexTy.getShape();
-    else if (indexTy.getShape() != indexShape)
-      return emitOpError()
-             << "expects indices return tensors to have identical shapes";
-    if (resultEncoding && indexTy.getEncoding() &&
-        resultEncoding != indexTy.getEncoding())
-      return emitOpError()
-             << "expects indices return tensors to match result encoding";
+             << "expects indices return tensor shape to match result shape";
+    return success();
   }
 
-  if (indexShape != resultShape)
-    return emitOpError()
-           << "expects indices return tensor shape to match result shape";
+  for (Value val : indices) {
+    if (auto indexTy = dyn_cast<IntegerType>(val.getType())) {
+      if (!indexTy.isSignlessInteger())
+        return emitOpError() << "expects scalar indices to be signless integers";
+      continue;
+    }
+    return emitOpError() << "scalar result expects scalar integer indices";
+  }
 
   return success();
 }

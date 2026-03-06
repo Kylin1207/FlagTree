@@ -19,12 +19,14 @@ class Tle_Op<string mnemonic, list<Trait> traits = []> :
 
 def Tle_TensorType : AnyTypeOf<[TT_Type, TTG_MemDescType]>;
 def Tle_ArgType : AnyTypeOf<[Tle_TensorType, LLVMPointerType, LLVMStructType]>;
+def Tle_LocalPointerResultType : AnyTypeOf<[TT_Tensor, TT_Ptr]>;
+def Tle_LocalPointerIndexType : AnyTypeOf<[TT_Tensor, TT_Int]>;
 
 def Tle_LocalPointersOp : Tle_Op<"local_pointers",
                                  [Pure]> {
   let arguments = (ins TTG_MemDescType:$src,
-                   Variadic<TT_Tensor>:$indices);
-  let results = (outs TT_Tensor:$result);
+                   Variadic<Tle_LocalPointerIndexType>:$indices);
+  let results = (outs Tle_LocalPointerResultType:$result);
   let hasVerifier = 1;
 }
 

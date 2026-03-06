@@ -423,17 +423,29 @@ def local_ptr(
 
     idx_tensors: list[tensor] = []
     view_shape: Optional[tuple[int, ...]] = None
+    scalar_index_flags: list[bool] = []
     for idx in indices_tuple:
         idx_tensor = idx if isinstance(idx, tensor) else _semantic.to_tensor(idx)
         if not idx_tensor.dtype.is_int():
             raise ValueError("local_ptr indices must use integer dtypes")
+        is_scalar_index = not idx_tensor.type.is_block()
+        scalar_index_flags.append(is_scalar_index)
+        if is_scalar_index:
+            idx_tensors.append(idx_tensor)
+            continue
         if view_shape is None:
             view_shape = tuple(idx_tensor.shape)
         elif tuple(idx_tensor.shape) != view_shape:
             raise ValueError("local_ptr indices must have identical shapes")
         idx_tensors.append(idx_tensor)
 
-    if view_shape is None:
+    if not idx_tensors:
+        raise ValueError("local_ptr indices cannot be empty")
+    all_scalar_indices = all(scalar_index_flags)
+    any_scalar_indices = any(scalar_index_flags)
+    if any_scalar_indices and not all_scalar_indices:
+        raise ValueError("local_ptr indices must be either all scalar or all tensors with identical shapes")
+    if not all_scalar_indices and view_shape is None:
         view_shape = tuple()
 
     try:
@@ -445,17 +457,23 @@ def local_ptr(
         warnings.warn("TLE semantic analysis module not available, skipping validation", UserWarning)
 
     ptr_dtype = tl.pointer_type(buffer.type.element_ty, SHARED_MEMORY_ADDRESS_SPACE)
-    block_type = tl.block_type(ptr_dtype, list(view_shape))
     insert_block = _semantic.builder.get_insertion_block()
     if insert_block is None:
         raise RuntimeError("TLE local_ptr called without an insertion block")
-    block_ir = block_type.to_ir(_semantic.builder)
+    if all_scalar_indices:
+        result_ty = ptr_dtype
+        result_ir = ptr_dtype.to_ir(_semantic.builder)
+    else:
+        result_ty = tl.block_type(ptr_dtype, list(view_shape))
+        result_ir = result_ty.to_ir(_semantic.builder)
     handles = [idx.handle for idx in idx_tensors]
-    local_ptr_op = _semantic.builder.create_local_pointers(block_ir, buffer.handle, *handles)
+    local_ptr_op = _semantic.builder.create_local_pointers(result_ir, buffer.handle, *handles)
 
-    result_tensor = tl.tensor(local_ptr_op.get_result(0), block_type)
+    result_tensor = tl.tensor(local_ptr_op.get_result(0), result_ty)
 
     if remote_buffer_marker:
+        if all_scalar_indices:
+            raise ValueError("local_ptr does not yet support scalar indices on remote buffers")
         # Keep remote semantics attached to the source buffered tensor and
         # materialize them only when pointer view is requested.
         from triton.experimental.tle import distributed as _tled_distributed
