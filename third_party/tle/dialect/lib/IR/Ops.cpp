@@ -149,17 +149,17 @@ LogicalResult DistributedBarrierOp::verify() {
   }
 
   StringRef kind = kindAttr.getValue();
-  if (kind != "cluster" && kind != "submesh") {
+  if (kind != "cluster" && kind != "submesh" && kind != "grid") {
     return emitOpError()
-           << "group_kind must be 'cluster' or 'submesh', got '" << kind
+           << "group_kind must be 'cluster', 'submesh', or 'grid', got '" << kind
            << "'";
   }
 
-  if (kind == "cluster") {
+  if (kind == "cluster" || kind == "grid") {
     if (rankAttr || shapeAttr || axesAttr || maskAttr) {
       return emitOpError()
-             << "cluster group_kind does not accept group_rank/group_shape/"
-                "group_axes/group_mask attrs";
+             << kind
+             << " group_kind does not accept group_rank/group_shape/group_axes/group_mask attrs";
     }
     return success();
   }

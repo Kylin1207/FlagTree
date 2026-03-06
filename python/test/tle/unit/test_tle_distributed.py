@@ -193,6 +193,7 @@ class _FakeOptions:
     def __init__(self):
         self.num_ctas = 1
         self.cluster_dims = (1, 1, 1)
+        self.launch_cooperative_grid = False
 
 
 class _FakeBuilder:
@@ -258,6 +259,38 @@ class TestDistributedBarrierScope:
         semantic = _LegacyBarrierSemantic()
         with pytest.raises(NotImplementedError, match="requires rebuilt TLE extension"):
             tle.distributed_barrier(mesh=sub, _semantic=semantic)
+
+    def test_distributed_barrier_grid_mesh_enables_coop_launch(self):
+        mesh = tle.device_mesh({"block": [("block_x", 4)]})
+        semantic = _FakeSemantic()
+        tle.distributed_barrier(mesh=mesh, _semantic=semantic)
+        assert semantic.builder.options.launch_cooperative_grid is True
+        assert semantic.builder.options.cluster_dims == (1, 1, 1)
+        assert semantic.builder.distributed_barrier_calls == 1
+        assert semantic.builder.distributed_barrier_group_args == [("grid", [], [], [])]
+
+    def test_distributed_barrier_grid_mesh_rejects_cluster_launch(self):
+        mesh = tle.device_mesh({"block": [("block_x", 4)]})
+        semantic = _FakeSemantic()
+        semantic.builder.options.cluster_dims = (2, 1, 1)
+        with pytest.raises(ValueError, match="requires cluster_dims=\\(1, 1, 1\\)"):
+            tle.distributed_barrier(mesh=mesh, _semantic=semantic)
+
+    def test_distributed_barrier_auto_can_pick_cluster_or_grid(self):
+        mesh = tle.device_mesh(
+            {
+                "block_cluster": [("cluster_x", 2)],
+                "block": [("block_x", 4)],
+            }
+        )
+
+        semantic_cluster = _FakeSemantic()
+        tle.distributed_barrier(mesh=mesh[:, 0], _semantic=semantic_cluster)
+        assert semantic_cluster.builder.distributed_barrier_group_args == [tuple()]
+
+        semantic_grid = _FakeSemantic()
+        tle.distributed_barrier(mesh=mesh[0, :], _semantic=semantic_grid)
+        assert semantic_grid.builder.distributed_barrier_group_args == [("grid", [], [], [])]
 
     def test_infer_submesh_barrier_group(self):
         mesh = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 2)]})

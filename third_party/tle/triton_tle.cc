@@ -179,10 +179,18 @@ void init_triton_tle_ir(py::module &&m) {
 
             if (!groupKind.empty()) {
               kindAttr = builder.getStringAttr(groupKind);
-              rankAttr =
-                  builder.getI32IntegerAttr(static_cast<int32_t>(groupShape.size()));
-              shapeAttr = DenseI32ArrayAttr::get(ctx, groupShape);
-              axesAttr = DenseI32ArrayAttr::get(ctx, groupAxes);
+            }
+            // Only materialize subgroup metadata when provided.
+            // This allows kind-only barriers (e.g. group_kind="grid").
+            if (!groupShape.empty() || !groupAxes.empty() || !groupMask.empty()) {
+              rankAttr = builder.getI32IntegerAttr(
+                  static_cast<int32_t>(groupShape.size()));
+              if (!groupShape.empty()) {
+                shapeAttr = DenseI32ArrayAttr::get(ctx, groupShape);
+              }
+              if (!groupAxes.empty()) {
+                axesAttr = DenseI32ArrayAttr::get(ctx, groupAxes);
+              }
               if (!groupMask.empty()) {
                 maskAttr = DenseI32ArrayAttr::get(ctx, groupMask);
               }

@@ -418,6 +418,27 @@ def _mesh_to_cluster_dims(mesh: device_mesh) -> tuple[int, int, int]:
     return _shape_to_cluster_dims(cluster_axes)
 
 
+def _mesh_has_cluster_axes(mesh: device_mesh) -> bool:
+    return any("cluster" in name for name in mesh.dim_names)
+
+
+def _mesh_has_block_axes(mesh: device_mesh) -> bool:
+    return any("block" in name for name in mesh.dim_names)
+
+
+def _mesh_uses_grid_barrier(mesh: device_mesh) -> bool:
+    # Heuristic for auto mode:
+    # - explicit cluster axes in the barrier mesh => cluster/submesh barrier
+    # - block-only axes in the barrier mesh => grid barrier
+    # - empty mesh dims (scalar) fallback to launch mesh naming
+    if mesh.dim_names:
+        return (not _mesh_has_cluster_axes(mesh)) and _mesh_has_block_axes(mesh)
+    return (
+        (not any("cluster" in name for name in mesh.launch_dim_names))
+        and any("block" in name for name in mesh.launch_dim_names)
+    )
+
+
 @dataclass(frozen=True)
 class _BarrierGroupDescriptor:
     kind: str
@@ -505,6 +526,25 @@ def _apply_mesh_cluster_launch(mesh: device_mesh, _semantic) -> tuple[int, int, 
     return cluster_dims
 
 
+def _apply_mesh_grid_launch(mesh: device_mesh, _semantic) -> None:
+    options = getattr(_semantic.builder, "options", None)
+    if options is None:
+        return
+
+    num_ctas = int(getattr(options, "num_ctas", 1))
+    if num_ctas != 1:
+        raise ValueError(
+            "mesh-driven grid distributed_barrier requires num_ctas=1"
+        )
+
+    cluster_dims = tuple(getattr(options, "cluster_dims", (1, 1, 1)))
+    if cluster_dims != (1, 1, 1):
+        raise ValueError(
+            "mesh-driven grid distributed_barrier requires cluster_dims=(1, 1, 1)"
+        )
+    object.__setattr__(options, "launch_cooperative_grid", True)
+
+
 def _resolve_launch_axis(mesh: device_mesh, axis: str | int) -> int:
     if isinstance(axis, int):
         ndim = len(mesh.launch_shape)
@@ -564,15 +604,34 @@ def shard_id(
 @tl.builtin
 def distributed_barrier(mesh: device_mesh | None = None, _semantic=None):
     """
-    M3 entrypoint: cluster synchronization primitive.
+    M3 entrypoint: distributed synchronization primitive.
 
-    `mesh` is currently accepted for API compatibility. Sub-mesh selective sync
-    is handled in a later iteration.
+    - cluster mesh: cluster/submesh synchronization
+    - block mesh: cooperative grid synchronization
     """
     mesh = tl._unwrap_if_constexpr(mesh)
     if mesh is not None and not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh or None, got {type(mesh).__name__}")
     subgroup = None
+    use_grid = mesh is not None and _mesh_uses_grid_barrier(mesh)
+
+    if use_grid:
+        if mesh is not None:
+            _apply_mesh_grid_launch(mesh, _semantic)
+        builder = _semantic.builder
+        if not hasattr(builder, "create_distributed_barrier"):
+            raise NotImplementedError(
+                "grid distributed_barrier requires TLE builder support"
+            )
+        try:
+            builder.create_distributed_barrier("grid", [], [], [])
+            return None
+        except TypeError as exc:
+            raise NotImplementedError(
+                "grid distributed_barrier requires rebuilt TLE extension with "
+                "group-aware create_distributed_barrier(group_kind, group_shape, group_axes, group_mask)"
+            ) from exc
+
     if mesh is not None:
         cluster_dims = _apply_mesh_cluster_launch(mesh, _semantic)
         subgroup = _infer_submesh_barrier_group(mesh, cluster_dims)

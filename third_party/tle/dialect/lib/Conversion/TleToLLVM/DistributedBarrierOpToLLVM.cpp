@@ -7,8 +7,10 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "third_party/nvidia/include/TritonNVIDIAGPUToLLVM/PTXAsmFormat.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "llvm/Support/MathExtras.h"
+#include <algorithm>
 #include <limits>
 
 namespace {
@@ -20,12 +22,21 @@ constexpr llvm::StringLiteral kGroupKindAttr = "group_kind";
 constexpr llvm::StringLiteral kGroupShapeAttr = "group_shape";
 constexpr llvm::StringLiteral kGroupMaskAttr = "group_mask";
 constexpr llvm::StringLiteral kTTGSharedAttr = "ttg.shared";
+constexpr llvm::StringLiteral kTTGGlobalScratchSizeAttr =
+    "ttg.global_scratch_memory_size";
+constexpr llvm::StringLiteral kTTGGlobalScratchAlignAttr =
+    "ttg.global_scratch_memory_alignment";
 constexpr llvm::StringLiteral kSubmeshScratchOffsetAttr =
     "tle.submesh_barrier_scratch_offset";
+constexpr llvm::StringLiteral kGridScratchOffsetAttr =
+    "tle.grid_barrier_scratch_offset";
 constexpr int32_t kSubmeshScratchAlignment = 16;
 constexpr int32_t kSubmeshScratchBytes = 8;
 constexpr int32_t kSubmeshCounterOffsetBytes = 0;
 constexpr int32_t kSubmeshPhaseOffsetBytes = 4;
+constexpr int32_t kGridScratchAlignment = 4;
+constexpr int32_t kGridScratchBytes = 4;
+constexpr int32_t kGridArrivedOffsetBytes = 0;
 
 FailureOr<int32_t> getOrCreateSubmeshScratchOffset(ModuleOp mod) {
   if (auto existing =
@@ -55,6 +66,48 @@ FailureOr<int32_t> getOrCreateSubmeshScratchOffset(ModuleOp mod) {
   return static_cast<int32_t>(offset);
 }
 
+FailureOr<int32_t> getOrCreateGridScratchOffset(ModuleOp mod) {
+  if (auto existing = mod->getAttrOfType<IntegerAttr>(kGridScratchOffsetAttr)) {
+    int64_t value = existing.getInt();
+    if (value < 0 || value > std::numeric_limits<int32_t>::max())
+      return failure();
+    return static_cast<int32_t>(value);
+  }
+
+  auto *ctx = mod.getContext();
+  auto i32Ty = IntegerType::get(ctx, 32);
+
+  int64_t currentSize = 0;
+  if (auto sizeAttr = mod->getAttrOfType<IntegerAttr>(kTTGGlobalScratchSizeAttr)) {
+    currentSize = sizeAttr.getInt();
+    if (currentSize < 0)
+      return failure();
+  } else {
+    mod->setAttr(kTTGGlobalScratchSizeAttr, IntegerAttr::get(i32Ty, 0));
+  }
+
+  int64_t currentAlign = 1;
+  if (auto alignAttr =
+          mod->getAttrOfType<IntegerAttr>(kTTGGlobalScratchAlignAttr)) {
+    currentAlign = alignAttr.getInt();
+    if (currentAlign <= 0)
+      return failure();
+  } else {
+    mod->setAttr(kTTGGlobalScratchAlignAttr, IntegerAttr::get(i32Ty, 1));
+  }
+
+  int64_t offset = llvm::alignTo(currentSize, int64_t{kGridScratchAlignment});
+  int64_t newSize = offset + kGridScratchBytes;
+  if (newSize > std::numeric_limits<int32_t>::max())
+    return failure();
+  int64_t newAlign = std::max(currentAlign, int64_t{kGridScratchAlignment});
+
+  mod->setAttr(kTTGGlobalScratchSizeAttr, IntegerAttr::get(i32Ty, newSize));
+  mod->setAttr(kTTGGlobalScratchAlignAttr, IntegerAttr::get(i32Ty, newAlign));
+  mod->setAttr(kGridScratchOffsetAttr, IntegerAttr::get(i32Ty, offset));
+  return static_cast<int32_t>(offset);
+}
+
 struct DistributedBarrierOpConversion
     : public ConvertOpToLLVMPattern<tle::DistributedBarrierOp> {
   using ConvertOpToLLVMPattern<tle::DistributedBarrierOp>::ConvertOpToLLVMPattern;
@@ -70,6 +123,128 @@ struct DistributedBarrierOpConversion
     rewriter.create<NVVM::ClusterArriveOp>(op.getLoc(), unit);
     rewriter.create<NVVM::ClusterWaitOp>(op.getLoc(), unit);
     rewriter.create<mlir::gpu::BarrierOp>(op.getLoc());
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+  LogicalResult lowerGridBarrier(tle::DistributedBarrierOp op,
+                                 ConversionPatternRewriter &rewriter) const {
+    auto loc = op.getLoc();
+    auto *ctx = rewriter.getContext();
+    TritonLLVMOpBuilder b(loc, rewriter);
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto i32Ty = IntegerType::get(ctx, 32);
+
+    auto mod = op->getParentOfType<ModuleOp>();
+    if (!mod)
+      return op.emitOpError("cannot find parent module for grid lowering");
+
+    auto scratchOffsetOr = getOrCreateGridScratchOffset(mod);
+    if (failed(scratchOffsetOr)) {
+      return op.emitOpError(
+          "failed to reserve global scratch for grid barrier");
+    }
+    int32_t scratchOffset = *scratchOffsetOr;
+
+    auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
+    if (!func) {
+      return op.emitOpError(
+          "grid lowering requires LLVM function context");
+    }
+    int32_t argIdx =
+        static_cast<int32_t>(func.getNumArguments()) + kGlobalScratchBufferOffset;
+    if (argIdx < 0 || argIdx >= static_cast<int32_t>(func.getNumArguments())) {
+      return op.emitOpError(
+          "cannot locate global scratch argument for grid barrier lowering");
+    }
+    Value globalScratchBase = func.getArgument(static_cast<unsigned>(argIdx));
+    auto globalPtrTy = dyn_cast<LLVM::LLVMPointerType>(globalScratchBase.getType());
+    if (!globalPtrTy) {
+      return op.emitOpError(
+          "global scratch argument must be an LLVM pointer");
+    }
+
+    auto globalI32PtrTy =
+        LLVM::LLVMPointerType::get(ctx, globalPtrTy.getAddressSpace());
+    Value arrivedBytePtr =
+        b.gep(globalPtrTy, i8Ty, globalScratchBase,
+              b.i32_val(scratchOffset + kGridArrivedOffsetBytes));
+    Value arrivedPtr = b.bitcast(arrivedBytePtr, globalI32PtrTy);
+
+    Value threadId = getThreadId(rewriter, loc);
+    Value isThread0 = b.icmp_eq(threadId, b.i32_val(0));
+    Value blockIdX = rewriter.create<NVVM::BlockIdXOp>(loc, i32Ty);
+    Value blockIdY = rewriter.create<NVVM::BlockIdYOp>(loc, i32Ty);
+    Value blockIdZ = rewriter.create<NVVM::BlockIdZOp>(loc, i32Ty);
+    Value isBlock0X = b.icmp_eq(blockIdX, b.i32_val(0));
+    Value isBlock0Y = b.icmp_eq(blockIdY, b.i32_val(0));
+    Value isBlock0Z = b.icmp_eq(blockIdZ, b.i32_val(0));
+    Value isBlock0 = b.and_(b.and_(isBlock0X, isBlock0Y), isBlock0Z);
+    Value workerPred = isThread0;
+
+    Value gridDimX = rewriter.create<NVVM::GridDimXOp>(loc, i32Ty);
+    Value gridDimY = rewriter.create<NVVM::GridDimYOp>(loc, i32Ty);
+    Value gridDimZ = rewriter.create<NVVM::GridDimZOp>(loc, i32Ty);
+    Value totalCTAs = b.mul(gridDimX, gridDimY);
+    totalCTAs = b.mul(totalCTAs, gridDimZ);
+
+    Block *curBlock = rewriter.getInsertionBlock();
+    Block *endBlock = curBlock->splitBlock(rewriter.getInsertionPoint());
+    Block *workBlock = rewriter.createBlock(endBlock);
+    Block *waitBlock = rewriter.createBlock(endBlock);
+    waitBlock->addArgument(i32Ty, loc); // old_arrive
+    Block *doneBlock = rewriter.createBlock(endBlock);
+    Block *workerDoneBlock = rewriter.createBlock(endBlock);
+
+    rewriter.setInsertionPointToEnd(curBlock);
+    rewriter.create<mlir::gpu::BarrierOp>(loc);
+    rewriter.create<LLVM::CondBrOp>(loc, workerPred, workBlock, ValueRange{},
+                                    doneBlock, ValueRange{});
+
+    rewriter.setInsertionPointToEnd(workBlock);
+    Value expectedMinusOne = b.sub(totalCTAs, b.i32_val(1));
+    Value gpuMasterAdd = b.sub(b.i32_val(0x80000000u), expectedMinusOne);
+    Value nb = b.select(isBlock0, gpuMasterAdd, b.i32_val(1));
+
+    auto emitAtomAddReleaseGpu = [&](Value ptr, Value addVal) -> Value {
+      ::mlir::triton::PTXBuilder ptxBuilder;
+      auto &atom = *ptxBuilder.create<>("atom.add.release.gpu.u32");
+      auto *dstOpr = ptxBuilder.newOperand("=r", /*init=*/true);
+      auto *ptrOpr = ptxBuilder.newAddrOperand(ptr, "l");
+      auto *addOpr = ptxBuilder.newOperand(addVal, "r");
+      atom(dstOpr, ptrOpr, addOpr);
+      return ptxBuilder.launch(rewriter, loc, i32Ty);
+    };
+    auto emitLoadAcquireGpu = [&](Value ptr) -> Value {
+      ::mlir::triton::PTXBuilder ptxBuilder;
+      auto &ld = *ptxBuilder.create<>("ld.acquire.gpu.u32");
+      auto *dstOpr = ptxBuilder.newOperand("=r", /*init=*/true);
+      auto *ptrOpr = ptxBuilder.newAddrOperand(ptr, "l");
+      ld(dstOpr, ptrOpr);
+      return ptxBuilder.launch(rewriter, loc, i32Ty);
+    };
+
+    Value oldArrive = emitAtomAddReleaseGpu(arrivedPtr, nb);
+    rewriter.create<LLVM::BrOp>(loc, ValueRange{oldArrive}, waitBlock);
+
+    rewriter.setInsertionPointToEnd(waitBlock);
+    Value oldArriveArg = waitBlock->getArgument(0);
+    Value currentArrive = emitLoadAcquireGpu(arrivedPtr);
+    Value xorVal = b.xor_(oldArriveArg, currentArrive);
+    Value flippedBit = b.and_(xorVal, b.i32_val(0x80000000u));
+    Value hasFlipped = b.icmp_ne(flippedBit, b.i32_val(0));
+    rewriter.create<LLVM::CondBrOp>(loc, hasFlipped, workerDoneBlock,
+                                    ValueRange{}, waitBlock,
+                                    ValueRange{oldArriveArg});
+
+    rewriter.setInsertionPointToEnd(workerDoneBlock);
+    rewriter.create<LLVM::BrOp>(loc, ValueRange{}, endBlock);
+
+    rewriter.setInsertionPointToEnd(doneBlock);
+    rewriter.create<LLVM::BrOp>(loc, ValueRange{}, endBlock);
+
+    rewriter.setInsertionPointToStart(endBlock);
+    rewriter.create<mlir::gpu::BarrierOp>(loc);
     rewriter.eraseOp(op);
     return success();
   }
@@ -245,6 +420,8 @@ struct DistributedBarrierOpConversion
   matchAndRewrite(tle::DistributedBarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     if (auto kindAttr = op->getAttrOfType<StringAttr>(kGroupKindAttr)) {
+      if (kindAttr.getValue() == "grid")
+        return lowerGridBarrier(op, rewriter);
       if (kindAttr.getValue() == "submesh")
         return lowerSubmeshBarrier(op, rewriter);
       return lowerClusterBarrier(op, rewriter);

@@ -347,6 +347,11 @@ class CUDABackend(BaseBackend):
 
         pm.run(mod)
         metadata["cluster_dims"] = (cluster_info.clusterDimX, cluster_info.clusterDimY, cluster_info.clusterDimZ)
+        # begin flagtree tle
+        # launch_cooperative_grid may be toggled during frontend semantic lowering
+        # (e.g. device_mesh + distributed_barrier grid mode), so refresh it here.
+        metadata["launch_cooperative_grid"] = opt.launch_cooperative_grid
+        # end flagtree tle
         tensordesc_meta = mod.get_tensordesc_metadata()
         metadata["tensordesc_meta"] = tensordesc_meta
         return mod

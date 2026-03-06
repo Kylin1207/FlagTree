@@ -5,6 +5,7 @@ MoE Align Block Size (TLE Tutorial)
 This tutorial benchmarks multiple MoE align implementations:
 - triton baseline (stage1 + stage2)
 - triton atomic (stage1+stage2 fused)
+- triton atomic fused (stage1+2 + stage3+4 fused)
 - tle cluster fused
 - sglang cuda
 """
@@ -29,6 +30,26 @@ TLE_CLUSTER_SIZE = 8
 SGLANG_MOE_ALIGN_KERNEL_URL = (
     "https://raw.githubusercontent.com/sgl-project/sglang/refs/heads/main/sgl-kernel/csrc/moe/moe_align_kernel.cu"
 )
+
+
+@lru_cache(maxsize=64)
+def _block_mesh(num_blocks: int):
+    return tled.device_mesh({"block": [("block_x", int(num_blocks))]})
+
+
+_TRITON_ALLOCATOR_INSTALLED = False
+
+
+def _install_triton_default_allocator() -> None:
+    global _TRITON_ALLOCATOR_INSTALLED
+    if _TRITON_ALLOCATOR_INSTALLED:
+        return
+
+    def _alloc(size: int, _alignment: int, _stream: Optional[int]):
+        return torch.empty((size, ), dtype=torch.uint8, device=DEVICE)
+
+    triton.set_allocator(_alloc)
+    _TRITON_ALLOCATOR_INSTALLED = True
 
 SGLANG_MOE_ALIGN_BINDING_CPP = r"""
 #include <torch/extension.h>
@@ -91,7 +112,6 @@ def moe_align_block_size_stage1_triton(
     block_size_sorted: tl.constexpr,
     block_size_expert: tl.constexpr,
     BLOCK_EXPERT: tl.constexpr,
-    ASSUME_VALID_EXPERT_ID: tl.constexpr,
 ):
     pid = tl.program_id(0)
 
@@ -109,15 +129,10 @@ def moe_align_block_size_stage1_triton(
     offsets = start_idx + tl.arange(0, tokens_per_thread)
     mask = offsets < numel
     expert_id = tl.load(topk_ids_ptr + offsets, mask=mask, other=0).to(tl.int32)
-    if ASSUME_VALID_EXPERT_ID:
-        valid = mask
-    else:
-        valid = mask & (expert_id < num_experts)
-        expert_id = tl.where(valid, expert_id, 0)
 
     expert_offsets = tl.arange(0, BLOCK_EXPERT)
     expert_mask = expert_offsets < num_experts
-    counts = tl.histogram(expert_id, BLOCK_EXPERT, mask=valid)
+    counts = tl.histogram(expert_id, BLOCK_EXPERT, mask=mask)
     tl.store(tokens_cnts_ptr + off_c + expert_offsets, counts, mask=expert_mask)
 
 
@@ -136,7 +151,6 @@ def moe_align_block_size_stage1_2_triton_atomic(
     block_size_sorted: tl.constexpr,
     block_size_expert: tl.constexpr,
     BLOCK_EXPERT: tl.constexpr,
-    ASSUME_VALID_EXPERT_ID: tl.constexpr,
 ):
     pid = tl.program_id(0)
 
@@ -154,15 +168,10 @@ def moe_align_block_size_stage1_2_triton_atomic(
     offsets = start_idx + tl.arange(0, tokens_per_thread)
     mask = offsets < numel
     expert_id = tl.load(topk_ids_ptr + offsets, mask=mask, other=0).to(tl.int32)
-    if ASSUME_VALID_EXPERT_ID:
-        valid = mask
-    else:
-        valid = mask & (expert_id < num_experts)
-        expert_id = tl.where(valid, expert_id, 0)
 
     expert_offsets = tl.arange(0, BLOCK_EXPERT)
     expert_mask = expert_offsets < num_experts
-    counts = tl.histogram(expert_id, BLOCK_EXPERT, mask=valid)
+    counts = tl.histogram(expert_id, BLOCK_EXPERT, mask=mask)
     prefix_before = tl.atomic_add(cumsum_ptr + expert_offsets, counts, mask=expert_mask)
     tl.store(tokens_cnts_ptr + off_t + expert_offsets, prefix_before, mask=expert_mask)
 
@@ -268,6 +277,155 @@ def moe_align_block_size_stage4(
     tl.store(sorted_token_ids_ptr + rank_post_pad, offset, mask=mask)
 
 
+@triton.jit(do_not_specialize=["numel"])
+def moe_align_block_size_stage4_triton_atomic_smem(
+    topk_ids_ptr,
+    sorted_token_ids_ptr,
+    expert_ids_ptr,
+    tokens_cnts_ptr,
+    cumsum_ptr,
+    num_experts: tl.constexpr,
+    block_size: tl.constexpr,
+    numel,
+    tokens_per_thread: tl.constexpr,
+    BLOCK_EXPERT: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    start_idx = tl.load(cumsum_ptr + pid)
+    end_idx = tl.load(cumsum_ptr + pid + 1)
+
+    for i in range(start_idx, end_idx, block_size):
+        tl.store(expert_ids_ptr + i // block_size, pid)
+
+    start_idx = pid * tokens_per_thread
+    off_t = pid * num_experts
+    expert_offsets = tl.arange(0, BLOCK_EXPERT)
+
+    local_counts = tle.alloc(
+        [BLOCK_EXPERT],
+        dtype=tl.int32,
+        layout=None,
+        scope=tle.smem,
+        nv_mma_shared_layout=False,
+    )
+    row_ptrs = tokens_cnts_ptr + off_t + expert_offsets
+    tle.copy(row_ptrs, local_counts, [num_experts])
+
+    offset = tl.arange(0, tokens_per_thread) + start_idx
+    mask = offset < numel
+    expert_id = tl.load(topk_ids_ptr + offset, mask=mask, other=0).to(tl.int32)
+    count_ptrs = tle.local_ptr(local_counts, (expert_id, ))
+    token_idx_in_expert = tl.atomic_add(count_ptrs, 1, mask=mask, sem="relaxed", scope="cta")
+    rank_post_pad = token_idx_in_expert + tl.load(cumsum_ptr + expert_id, mask=mask, other=0)
+    tl.store(sorted_token_ids_ptr + rank_post_pad, offset, mask=mask)
+
+
+@triton.jit(do_not_specialize=["numel"])
+def moe_align_block_size_triton_atomic_fused_coop(
+    topk_ids_ptr,
+    sorted_token_ids_ptr,
+    expert_ids_ptr,
+    num_tokens_post_pad_ptr,
+    cumsum_ptr,
+    mesh: tl.constexpr,
+    num_experts: tl.constexpr,
+    block_size: tl.constexpr,
+    numel,
+    numel_sorted_token_ids: tl.constexpr,
+    numel_expert_ids: tl.constexpr,
+    NUM_BLOCKS: tl.constexpr,
+    BLOCK_TOKENS: tl.constexpr,
+    BLOCK_EXPERT: tl.constexpr,
+    EXPERTS_PER_PROG: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    expert_offsets = tl.arange(0, BLOCK_EXPERT)
+    expert_mask = expert_offsets < num_experts
+    token_offsets = tl.arange(0, BLOCK_TOKENS)
+
+    # Stage 0: init outputs + global scratch.
+    for base in range(pid * BLOCK_TOKENS, numel_sorted_token_ids, NUM_BLOCKS * BLOCK_TOKENS):
+        offs = base + token_offsets
+        tl.store(sorted_token_ids_ptr + offs, numel, mask=offs < numel_sorted_token_ids)
+    for base in range(pid * BLOCK_TOKENS, numel_expert_ids, NUM_BLOCKS * BLOCK_TOKENS):
+        offs = base + token_offsets
+        tl.store(expert_ids_ptr + offs, 0, mask=offs < numel_expert_ids)
+    if pid == 0:
+        tl.store(cumsum_ptr + expert_offsets, 0, mask=expert_mask)
+    tled.distributed_barrier(mesh)
+
+    # Stage 1: per-program local histogram + global atomic prefix.
+    local_counts = tle.alloc(
+        [BLOCK_EXPERT],
+        dtype=tl.int32,
+        layout=None,
+        scope=tle.smem,
+        nv_mma_shared_layout=False,
+    )
+    local_counts_ptrs = tle.local_ptr(local_counts, (expert_offsets, ))
+    tl.store(local_counts_ptrs, 0, mask=expert_mask)
+
+    for base in range(pid * BLOCK_TOKENS, numel, NUM_BLOCKS * BLOCK_TOKENS):
+        offs = base + token_offsets
+        mask = offs < numel
+        expert_id = tl.load(topk_ids_ptr + offs, mask=mask, other=0).to(tl.int32)
+        count_ptrs = tle.local_ptr(local_counts, (expert_id, ))
+        tl.atomic_add(count_ptrs, 1, mask=mask, sem="relaxed", scope="cta")
+
+    local_counts_vals = tl.load(local_counts_ptrs, mask=expert_mask, other=0)
+    prefix_before = tl.atomic_add(cumsum_ptr + expert_offsets, local_counts_vals, mask=expert_mask, sem="acq_rel", scope="gpu")
+    tl.store(local_counts_ptrs, prefix_before, mask=expert_mask)
+    tled.distributed_barrier(mesh)
+
+    # Stage 2: rank0 aligns expert totals and builds starts in global cumsum.
+    if pid == 0:
+        total_counts = tl.load(cumsum_ptr + expert_offsets, mask=expert_mask, other=0)
+        aligned_counts = tl.cdiv(total_counts, block_size) * block_size
+        expert_starts = tl.cumsum(aligned_counts, axis=0) - aligned_counts
+        tl.store(cumsum_ptr + expert_offsets, expert_starts, mask=expert_mask)
+        total_tokens = tl.sum(aligned_counts, axis=0)
+        tl.store(num_tokens_post_pad_ptr, total_tokens)
+    tled.distributed_barrier(mesh)
+
+    # Cache expert starts in shared once; Stage 4 reuses it for every token.
+    expert_starts_local = tle.alloc(
+        [BLOCK_EXPERT],
+        dtype=tl.int32,
+        layout=None,
+        scope=tle.smem,
+        nv_mma_shared_layout=False,
+    )
+    expert_starts_ptrs = tle.local_ptr(expert_starts_local, (expert_offsets, ))
+    expert_starts_vals = tl.load(cumsum_ptr + expert_offsets, mask=expert_mask, other=0)
+    tl.store(expert_starts_ptrs, expert_starts_vals, mask=expert_mask)
+
+    # Stage 3: fill expert ids.
+    total_tokens = tl.load(num_tokens_post_pad_ptr)
+    for local_expert_idx in range(EXPERTS_PER_PROG):
+        expert_id = pid + local_expert_idx * NUM_BLOCKS
+        valid_expert = expert_id < num_experts
+        start_idx = tl.load(tle.local_ptr(expert_starts_local, (expert_id, )), mask=valid_expert, other=0)
+        next_expert = expert_id + 1
+        has_next = valid_expert & (next_expert < num_experts)
+        end_idx = tl.load(tle.local_ptr(expert_starts_local, (next_expert, )), mask=has_next, other=total_tokens)
+        end_idx = tl.where(has_next, end_idx, total_tokens)
+        start_idx = tl.where(valid_expert, start_idx, 0)
+        end_idx = tl.where(valid_expert, end_idx, 0)
+        for i in range(start_idx, end_idx, block_size):
+            tl.store(expert_ids_ptr + i // block_size, expert_id)
+
+    # Stage 4: scatter tokens using local prefix + expert starts.
+    for base in range(pid * BLOCK_TOKENS, numel, NUM_BLOCKS * BLOCK_TOKENS):
+        offs = base + token_offsets
+        mask = offs < numel
+        expert_id = tl.load(topk_ids_ptr + offs, mask=mask, other=0).to(tl.int32)
+        count_ptrs = tle.local_ptr(local_counts, (expert_id, ))
+        rank_with_prefix = tl.atomic_add(count_ptrs, 1, mask=mask, sem="relaxed", scope="cta")
+        rank_base = tl.load(tle.local_ptr(expert_starts_local, (expert_id, )), mask=mask, other=0)
+        rank_post_pad = rank_with_prefix + rank_base
+        tl.store(sorted_token_ids_ptr + rank_post_pad, offs, mask=mask)
+
+
 def _supports_tle_cluster_remote() -> bool:
     if not torch.cuda.is_available():
         return False
@@ -277,8 +435,8 @@ def _supports_tle_cluster_remote() -> bool:
 
 def _pick_tle_fused_launch_params(numel: int, num_experts: int) -> Tuple[int, int]:
     # Empirical tuning on SM90+:
-    # - For larger expert counts (e.g. 512), bigger token tiles and fewer warps
-    #   improve throughput.
+    # - For larger expert counts, bigger token tiles are helpful for
+    #   cluster-fused path.
     # - For smaller expert counts, keep conservative settings.
     if num_experts >= 256:
         if numel >= 32768:
@@ -292,6 +450,29 @@ def _pick_tle_fused_launch_params(numel: int, num_experts: int) -> Tuple[int, in
     if num_experts <= 64 and numel <= 2048:
         return 128, 8
     return 256, 8
+
+
+def _pick_triton_atomic_fused_launch_params(numel: int, num_experts: int) -> Tuple[int, int]:
+    # Triton cooperative-grid fused path benefits from smaller token tiles
+    # at large numel to improve distributed_barrier amortization and occupancy.
+    if num_experts >= 256:
+        if numel >= 1024:
+            return 1024, 4
+        return 256, 8
+    return _pick_tle_fused_launch_params(numel, num_experts)
+
+
+def _pick_triton_atomic_fused_num_blocks(numel: int, num_experts: int, block_tokens: int) -> int:
+    if not torch.cuda.is_available():
+        return 1
+    props = torch.cuda.get_device_properties(DEVICE)
+    sm_count = int(getattr(props, "multi_processor_count", 1))
+    token_programs = triton.cdiv(numel, block_tokens)
+    # Cooperative grid too deep can increase barrier overhead/launch pressure for
+    # large-expert fused kernels; cap more tightly in that regime.
+    block_cap = sm_count * (3 if num_experts >= 256 else 4)
+    # Start from an aggressive cooperative-grid guess, then fallback on launch failure.
+    return max(1, min(token_programs, num_experts, block_cap))
 
 
 @triton.jit(do_not_specialize=["numel"])
@@ -310,7 +491,6 @@ def moe_align_block_size_tle_cluster_fused(
     BLOCK_TOKENS: tl.constexpr,
     BLOCK_EXPERT: tl.constexpr,
     EXPERTS_PER_SHARD: tl.constexpr,
-    ASSUME_VALID_EXPERT_ID: tl.constexpr,
 ):
     cluster_rank = tled.shard_id(mesh, "cluster_x")
     is_rank0 = cluster_rank == 0
@@ -357,13 +537,8 @@ def moe_align_block_size_tle_cluster_fused(
         offs = base + init_offsets
         mask = offs < numel
         expert_id = tl.load(topk_ids_ptr + offs, mask=mask, other=0).to(tl.int32)
-        if ASSUME_VALID_EXPERT_ID:
-            valid = mask
-        else:
-            valid = mask & (expert_id < num_experts)
-            expert_id = tl.where(valid, expert_id, 0)
         count_ptrs = tle.local_ptr(local_counts, (expert_id, ))
-        tl.atomic_add(count_ptrs, 1, mask=valid, sem="relaxed", scope="cta")
+        tl.atomic_add(count_ptrs, 1, mask=mask, sem="relaxed", scope="cta")
 
     # Stage 1c: directly atomic-add shard histogram into rank0 cumsum DSMEM.
     # The atomic return value is this shard's prefix_before for scatter.
@@ -418,24 +593,21 @@ def moe_align_block_size_tle_cluster_fused(
         for i in range(start_idx, end_idx, block_size):
             tl.store(expert_ids_ptr + i // block_size, expert_idx)
 
+    tled.distributed_barrier(mesh)
+
     # Stage 4b: second token pass, scatter with (prefix_before + rank_in_shard) + expert_base.
     # local_counts currently holds prefix_before from Stage 1c.
     for base in range(cluster_rank * BLOCK_TOKENS, numel, CLUSTER_SIZE * BLOCK_TOKENS):
         offs = base + init_offsets
         mask = offs < numel
         expert_id = tl.load(topk_ids_ptr + offs, mask=mask, other=0).to(tl.int32)
-        if ASSUME_VALID_EXPERT_ID:
-            valid = mask
-        else:
-            valid = mask & (expert_id < num_experts)
-            expert_id = tl.where(valid, expert_id, 0)
 
         count_ptrs = tle.local_ptr(local_counts, (expert_id, ))
-        rank_with_prefix = tl.atomic_add(count_ptrs, 1, mask=valid, sem="relaxed", scope="cta")
+        rank_with_prefix = tl.atomic_add(count_ptrs, 1, mask=mask, sem="relaxed", scope="cta")
         base_ptrs = tle.local_ptr(cumsum_local, (expert_id, ))
-        rank_base = tl.load(base_ptrs, mask=valid, other=0)
+        rank_base = tl.load(base_ptrs, mask=mask, other=0)
         rank_post_pad = rank_with_prefix + rank_base
-        tl.store(sorted_token_ids_ptr + rank_post_pad, offs, mask=valid)
+        tl.store(sorted_token_ids_ptr + rank_post_pad, offs, mask=mask)
 
 
 def _allocate_outputs(
@@ -462,7 +634,6 @@ def _make_bench_runner(
     expert_ids: torch.Tensor,
     num_tokens_post_pad: torch.Tensor,
     provider: str = "triton",
-    assume_valid_expert_id: bool = False,
     triton_stage12_atomic: bool = False,
 ):
     numel = topk_ids.numel()
@@ -477,19 +648,28 @@ def _make_bench_runner(
     # TLE alloc currently requires power-of-two block shape.
     block_expert_cluster = triton.next_power_of_2(num_experts)
     experts_per_shard = ceil_div(num_experts, TLE_CLUSTER_SIZE)
-    block_tokens_fused, num_warps_fused = _pick_tle_fused_launch_params(numel, num_experts)
+    block_tokens_tle, num_warps_tle = _pick_tle_fused_launch_params(numel, num_experts)
+    block_tokens_taf, num_warps_taf = _pick_triton_atomic_fused_launch_params(numel, num_experts)
+    triton_atomic_fused_num_blocks = _pick_triton_atomic_fused_num_blocks(numel, num_experts, block_tokens_taf)
+    triton_atomic_fused_experts_per_prog = ceil_div(num_experts, triton_atomic_fused_num_blocks)
     use_cluster_tle_fused = (
         provider == "tle_cluster_fused"
         and topk_ids.is_cuda
         and _supports_tle_cluster_remote()
         and block_expert_cluster <= 1024
     )
-
+    use_triton_atomic_fused = (
+        provider == "triton_atomic_fused"
+        and topk_ids.is_cuda
+        and block_expert_cluster <= 1024
+    )
     tokens_cnts = None
     cumsum = None
-    if not use_cluster_tle_fused:
+    if provider in ("triton", ):
         tokens_cnts = torch.empty((num_experts + 1, num_experts), dtype=torch.int32, device=topk_ids.device)
         cumsum = torch.empty((num_experts + 1, ), dtype=torch.int32, device=topk_ids.device)
+    elif provider == "triton_atomic_fused":
+        cumsum = torch.empty((num_experts, ), dtype=torch.int32, device=topk_ids.device)
 
     def init_fn():
         if tokens_cnts is not None:
@@ -514,7 +694,6 @@ def _make_bench_runner(
                     block_size_sorted,
                     block_size_expert,
                     BLOCK_EXPERT=block_expert_hist,
-                    ASSUME_VALID_EXPERT_ID=assume_valid_expert_id,
                 )
                 moe_align_block_size_stage3_from_cumsum[(1, )](
                     num_tokens_post_pad,
@@ -522,6 +701,18 @@ def _make_bench_runner(
                     num_experts,
                     num_experts_next_power_of_2,
                     block_size,
+                )
+                moe_align_block_size_stage4_triton_atomic_smem[grid](
+                    topk_ids,
+                    sorted_ids,
+                    expert_ids,
+                    tokens_cnts,
+                    cumsum,
+                    num_experts,
+                    block_size,
+                    numel,
+                    tokens_per_thread,
+                    BLOCK_EXPERT=block_expert_hist,
                 )
             else:
                 moe_align_block_size_stage1_triton[grid](
@@ -537,7 +728,6 @@ def _make_bench_runner(
                     block_size_sorted,
                     block_size_expert,
                     BLOCK_EXPERT=block_expert_hist,
-                    ASSUME_VALID_EXPERT_ID=assume_valid_expert_id,
                 )
                 if num_experts == triton.next_power_of_2(num_experts):
                     moe_align_block_size_stage2_vec[grid](tokens_cnts, num_experts)
@@ -551,17 +741,53 @@ def _make_bench_runner(
                     num_experts_next_power_of_2,
                     block_size,
                 )
-            moe_align_block_size_stage4[grid](
-                topk_ids,
-                sorted_ids,
-                expert_ids,
-                tokens_cnts,
-                cumsum,
-                num_experts,
-                block_size,
-                numel,
-                tokens_per_thread,
-            )
+                moe_align_block_size_stage4[grid](
+                    topk_ids,
+                    sorted_ids,
+                    expert_ids,
+                    tokens_cnts,
+                    cumsum,
+                    num_experts,
+                    block_size,
+                    numel,
+                    tokens_per_thread,
+                )
+        elif provider == "triton_atomic_fused":
+            if not use_triton_atomic_fused:
+                raise ValueError("triton_atomic_fused requires CUDA SM90+ and num_experts <= 1024")
+            nonlocal triton_atomic_fused_num_blocks, triton_atomic_fused_experts_per_prog
+            while True:
+                try:
+                    moe_align_block_size_triton_atomic_fused_coop[(triton_atomic_fused_num_blocks, )](
+                        topk_ids,
+                        sorted_ids,
+                        expert_ids,
+                        num_tokens_post_pad,
+                        cumsum,
+                        _block_mesh(triton_atomic_fused_num_blocks),
+                        num_experts,
+                        block_size,
+                        numel,
+                        numel_sorted_token_ids,
+                        numel_expert_ids,
+                        NUM_BLOCKS=triton_atomic_fused_num_blocks,
+                        BLOCK_TOKENS=block_tokens_taf,
+                        BLOCK_EXPERT=block_expert_cluster,
+                        EXPERTS_PER_PROG=triton_atomic_fused_experts_per_prog,
+                        num_ctas=1,
+                        num_warps=num_warps_taf,
+                        launch_cooperative_grid=True,
+                    )
+                    break
+                except Exception as ex:
+                    msg = str(ex).lower()
+                    if "no allocator was set" in msg:
+                        _install_triton_default_allocator()
+                        continue
+                    if triton_atomic_fused_num_blocks <= 1 or "cooperative" not in msg:
+                        raise
+                    triton_atomic_fused_num_blocks = max(1, triton_atomic_fused_num_blocks // 2)
+                    triton_atomic_fused_experts_per_prog = ceil_div(num_experts, triton_atomic_fused_num_blocks)
         elif provider == "tle_cluster_fused":
             if not use_cluster_tle_fused:
                 raise ValueError("tle_cluster_fused requires CUDA SM90+ and num_experts <= 1024")
@@ -577,12 +803,11 @@ def _make_bench_runner(
                 numel_expert_ids,
                 mesh=BLOCK_CLUSTER_MESH_8,
                 CLUSTER_SIZE=TLE_CLUSTER_SIZE,
-                BLOCK_TOKENS=block_tokens_fused,
+                BLOCK_TOKENS=block_tokens_tle,
                 BLOCK_EXPERT=block_expert_cluster,
                 EXPERTS_PER_SHARD=experts_per_shard,
-                ASSUME_VALID_EXPERT_ID=assume_valid_expert_id,
                 num_ctas=1,
-                num_warps=num_warps_fused,
+                num_warps=num_warps_tle,
             )
         else:
             raise ValueError(f"unknown provider: {provider}")
@@ -597,7 +822,6 @@ def moe_align_block_size_triton_impl(
     sorted_token_ids: torch.Tensor,
     expert_ids: torch.Tensor,
     num_tokens_post_pad: torch.Tensor,
-    assume_valid_expert_id: bool = False,
     triton_stage12_atomic: bool = False,
 ) -> None:
     init_fn, kernel_fn = _make_bench_runner(
@@ -608,7 +832,6 @@ def moe_align_block_size_triton_impl(
         expert_ids,
         num_tokens_post_pad,
         provider="triton",
-        assume_valid_expert_id=assume_valid_expert_id,
         triton_stage12_atomic=triton_stage12_atomic,
     )
     init_fn()
@@ -620,7 +843,6 @@ def moe_align_block_size_triton(
     block_size: int,
     num_experts: int,
     pad_sorted_ids: bool = False,
-    assume_valid_expert_id: bool = False,
     triton_stage12_atomic: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     sorted_ids, expert_ids, num_tokens_post_pad = _allocate_outputs(topk_ids, num_experts, block_size, pad_sorted_ids)
@@ -631,7 +853,6 @@ def moe_align_block_size_triton(
         sorted_ids,
         expert_ids,
         num_tokens_post_pad,
-        assume_valid_expert_id=assume_valid_expert_id,
         triton_stage12_atomic=triton_stage12_atomic,
     )
     return sorted_ids, expert_ids, num_tokens_post_pad
@@ -797,6 +1018,29 @@ def run_correctness(
         "triton": (triton_sorted, triton_expert, triton_num_post),
         "triton_atomic": (triton_atomic_sorted, triton_atomic_expert, triton_atomic_num_post),
     }
+    try:
+        triton_atomic_fused_sorted, triton_atomic_fused_expert, triton_atomic_fused_num_post = _allocate_outputs(
+            topk_ids, num_experts, block_size, False
+        )
+        init_fn_taf, kernel_fn_taf = _make_bench_runner(
+            topk_ids,
+            block_size,
+            num_experts,
+            triton_atomic_fused_sorted,
+            triton_atomic_fused_expert,
+            triton_atomic_fused_num_post,
+            provider="triton_atomic_fused",
+            triton_stage12_atomic=False,
+        )
+        init_fn_taf()
+        kernel_fn_taf()
+        outputs["triton_atomic_fused"] = (
+            triton_atomic_fused_sorted,
+            triton_atomic_fused_expert,
+            triton_atomic_fused_num_post,
+        )
+    except Exception as ex:
+        print(f"Correctness: skip triton_atomic_fused ({ex})")
 
     if topk_ids.is_cuda and _supports_tle_cluster_remote() and triton.next_power_of_2(num_experts) <= 1024:
         sorted_ids_cf, expert_ids_cf, num_tokens_post_pad_cf = _allocate_outputs(topk_ids, num_experts, block_size, False)
@@ -808,7 +1052,6 @@ def run_correctness(
             expert_ids_cf,
             num_tokens_post_pad_cf,
             provider="tle_cluster_fused",
-            assume_valid_expert_id=False,
             triton_stage12_atomic=False,
         )
         init_fn_cf()
@@ -878,11 +1121,15 @@ def _sample_topk_ids(num_tokens: int, num_experts: int, probs: torch.Tensor) -> 
     return ids.to(torch.int32)
 
 
-def run_realistic_benchmark(block_size: int, num_experts: int, assume_valid_expert_id: bool = False) -> None:
-    print("num_tokens,num_experts,source,triton_ms,triton_atomic_ms,tle_cluster_fused_ms,sglang_cuda_ms")
+def run_realistic_benchmark(block_size: int, num_experts: int) -> None:
+    print(
+        "num_tokens,num_experts,source,triton_ms,triton_atomic_ms,triton_atomic_fused_ms,"
+        "tle_cluster_fused_ms,sglang_cuda_ms"
+    )
     sglang_available = _resolve_sglang_cuda_moe_align() is not None
     if not sglang_available:
         print("warning: sglang cuda moe_align_block_size not found, sglang_cuda_ms will be na")
+    triton_atomic_fused_warned = False
     tle_cluster_fused_warned = False
     probs = _zipf_probs(num_experts, alpha=1.2)
     for num_tokens, _ in _moe_realistic_shapes(num_experts):
@@ -896,7 +1143,6 @@ def run_realistic_benchmark(block_size: int, num_experts: int, assume_valid_expe
             expert_ids_t,
             num_tokens_post_pad_t,
             provider="triton",
-            assume_valid_expert_id=assume_valid_expert_id,
             triton_stage12_atomic=False,
         )
         sorted_ids_ta, expert_ids_ta, num_tokens_post_pad_ta = _allocate_outputs(topk_ids, num_experts, block_size, False)
@@ -908,7 +1154,6 @@ def run_realistic_benchmark(block_size: int, num_experts: int, assume_valid_expe
             expert_ids_ta,
             num_tokens_post_pad_ta,
             provider="triton",
-            assume_valid_expert_id=assume_valid_expert_id,
             triton_stage12_atomic=True,
         )
         ms_t, _, _ = triton.testing.do_bench(
@@ -923,6 +1168,29 @@ def run_realistic_benchmark(block_size: int, num_experts: int, assume_valid_expe
             rep=100,
             quantiles=[0.5, 0.2, 0.8],
         )
+        ms_taf = None
+        try:
+            sorted_ids_taf, expert_ids_taf, num_tokens_post_pad_taf = _allocate_outputs(topk_ids, num_experts, block_size, False)
+            init_fn_taf, kernel_fn_taf = _make_bench_runner(
+                topk_ids,
+                block_size,
+                num_experts,
+                sorted_ids_taf,
+                expert_ids_taf,
+                num_tokens_post_pad_taf,
+                provider="triton_atomic_fused",
+                triton_stage12_atomic=False,
+            )
+            ms_taf, _, _ = triton.testing.do_bench(
+                lambda: (init_fn_taf(), kernel_fn_taf()),
+                warmup=20,
+                rep=100,
+                quantiles=[0.5, 0.2, 0.8],
+            )
+        except Exception as ex:
+            if not triton_atomic_fused_warned:
+                print(f"warning: triton_atomic_fused unavailable, triton_atomic_fused_ms will be na ({ex})")
+                triton_atomic_fused_warned = True
         ms_cf = None
         try:
             sorted_ids_cf, expert_ids_cf, num_tokens_post_pad_cf = _allocate_outputs(topk_ids, num_experts, block_size, False)
@@ -934,7 +1202,6 @@ def run_realistic_benchmark(block_size: int, num_experts: int, assume_valid_expe
                 expert_ids_cf,
                 num_tokens_post_pad_cf,
                 provider="tle_cluster_fused",
-                assume_valid_expert_id=assume_valid_expert_id,
             )
             ms_cf, _, _ = triton.testing.do_bench(
                 lambda: (init_fn_cf(), kernel_fn_cf()),
@@ -968,9 +1235,10 @@ def run_realistic_benchmark(block_size: int, num_experts: int, assume_valid_expe
                 quantiles=[0.5, 0.2, 0.8],
             )
         ms_cf_str = "na" if ms_cf is None else f"{float(ms_cf):.4f}"
+        ms_taf_str = "na" if ms_taf is None else f"{float(ms_taf):.4f}"
         ms_s_str = "na" if ms_s is None else f"{float(ms_s):.4f}"
         print(
-            f"{num_tokens},{num_experts},zipf,{float(ms_t):.4f},{float(ms_ta):.4f},{ms_cf_str},{ms_s_str}"
+            f"{num_tokens},{num_experts},zipf,{float(ms_t):.4f},{float(ms_ta):.4f},{ms_taf_str},{ms_cf_str},{ms_s_str}"
         )
 
 
@@ -990,7 +1258,6 @@ def run_real_data_benchmark(
     topk_ids_path: str,
     num_experts: int,
     block_size: int,
-    assume_valid_expert_id: bool = False,
 ) -> None:
     topk_ids = _load_real_topk_ids(topk_ids_path)
     num_tokens = topk_ids.numel()
@@ -1007,7 +1274,6 @@ def run_real_data_benchmark(
         expert_ids_t,
         num_tokens_post_pad_t,
         provider="triton",
-        assume_valid_expert_id=assume_valid_expert_id,
         triton_stage12_atomic=False,
     )
     sorted_ids_ta, expert_ids_ta, num_tokens_post_pad_ta = _allocate_outputs(topk_ids, num_experts, block_size, False)
@@ -1019,7 +1285,6 @@ def run_real_data_benchmark(
         expert_ids_ta,
         num_tokens_post_pad_ta,
         provider="triton",
-        assume_valid_expert_id=assume_valid_expert_id,
         triton_stage12_atomic=True,
     )
     ms_t, _, _ = triton.testing.do_bench(
@@ -1034,6 +1299,27 @@ def run_real_data_benchmark(
         rep=100,
         quantiles=[0.5, 0.2, 0.8],
     )
+    ms_taf = None
+    try:
+        sorted_ids_taf, expert_ids_taf, num_tokens_post_pad_taf = _allocate_outputs(topk_ids, num_experts, block_size, False)
+        init_fn_taf, kernel_fn_taf = _make_bench_runner(
+            topk_ids,
+            block_size,
+            num_experts,
+            sorted_ids_taf,
+            expert_ids_taf,
+            num_tokens_post_pad_taf,
+            provider="triton_atomic_fused",
+            triton_stage12_atomic=False,
+        )
+        ms_taf, _, _ = triton.testing.do_bench(
+            lambda: (init_fn_taf(), kernel_fn_taf()),
+            warmup=20,
+            rep=100,
+            quantiles=[0.5, 0.2, 0.8],
+        )
+    except Exception as ex:
+        print(f"warning: triton_atomic_fused unavailable, triton_atomic_fused=na ({ex})")
     ms_cf = None
     try:
         sorted_ids_cf, expert_ids_cf, num_tokens_post_pad_cf = _allocate_outputs(topk_ids, num_experts, block_size, False)
@@ -1045,7 +1331,6 @@ def run_real_data_benchmark(
             expert_ids_cf,
             num_tokens_post_pad_cf,
             provider="tle_cluster_fused",
-            assume_valid_expert_id=assume_valid_expert_id,
         )
         ms_cf, _, _ = triton.testing.do_bench(
             lambda: (init_fn_cf(), kernel_fn_cf()),
@@ -1081,6 +1366,10 @@ def run_real_data_benchmark(
     print("provider,ms")
     print(f"triton,{float(ms_t):.4f}")
     print(f"triton_atomic,{float(ms_ta):.4f}")
+    if ms_taf is None:
+        print("triton_atomic_fused,na")
+    else:
+        print(f"triton_atomic_fused,{float(ms_taf):.4f}")
     if ms_cf is None:
         print("tle_cluster_fused,na")
     else:
@@ -1098,11 +1387,6 @@ def main(argv=None):
     parser.add_argument("--num_experts", type=int, default=64, help="num experts")
     parser.add_argument("--skip_correctness", action="store_true", help="skip correctness checks")
     parser.add_argument("--real_data", type=str, default="", help="path to topk_ids.pt")
-    parser.add_argument(
-        "--assume_valid_expert_id",
-        action="store_true",
-        help="assume topk_ids are always in [0, num_experts), skip validity checks in stage1/fused paths",
-    )
     args = parser.parse_args(argv)
 
     if not args.skip_correctness:
@@ -1113,13 +1397,11 @@ def main(argv=None):
             args.real_data,
             args.num_experts,
             args.block_size,
-            assume_valid_expert_id=args.assume_valid_expert_id,
         )
     else:
         run_realistic_benchmark(
             args.block_size,
             args.num_experts,
-            assume_valid_expert_id=args.assume_valid_expert_id,
         )
 
 
