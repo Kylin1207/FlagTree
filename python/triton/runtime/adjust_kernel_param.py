@@ -488,16 +488,28 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 transpose_used_vars.add(v)
                 transpose_used_vars.update(self._get_dependencies_vars(v))
 
-        # Only add the canonical (non-transposed) block shape for each descriptor.
-        tma_map: Dict[str, Set[Tuple[str, ...]]] = {}
+        # Group loads by desc_name: track whether any non-transposed load exists.
+        # - If both transposed and non-transposed loads exist, or only non-transposed:
+        #   use the canonical block shape as-is (matches desc.base memory layout).
+        # - If only transposed loads exist:
+        #   swap the block shape to recover the actual memory layout order.
+        desc_has_non_trans: Dict[str, bool] = {}
         for tma_info in self.tma_load_assignments:
             desc_name = tma_info["desc_name"]
-            target_var = tma_info["var_name"]
-            if target_var in transpose_used_vars:
-                continue
+            is_trans = tma_info["var_name"] in transpose_used_vars
+            if desc_name not in desc_has_non_trans:
+                desc_has_non_trans[desc_name] = not is_trans
+            elif not is_trans:
+                desc_has_non_trans[desc_name] = True
+
+        tma_map: Dict[str, Set[Tuple[str, ...]]] = {}
+        for desc_name, has_non_trans in desc_has_non_trans.items():
             block_shape = list[str](desc_block_shapes.get(desc_name) or [])
-            if block_shape:
-                tma_map.setdefault(desc_name, set()).add(tuple(block_shape))
+            if not block_shape:
+                continue
+            if not has_non_trans and len(block_shape) >= 2:
+                block_shape[-1], block_shape[-2] = block_shape[-2], block_shape[-1]
+            tma_map[desc_name] = {tuple(block_shape)}
         return tma_map, desc_block_shapes
 
 
