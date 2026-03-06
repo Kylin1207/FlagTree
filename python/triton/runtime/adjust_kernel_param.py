@@ -321,7 +321,8 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     var_deps.update(self._get_dependencies_vars(used_var, visited.copy()))
         return var_deps
 
-    def analyze_dot_dim(self, desc_block_shapes: Dict[str, List[str]]) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+    #def analyze_dot_dim(self, desc_block_shapes: Dict[str, List[str]]) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+    def analyze_dot_dim(self, tma_map: Dict[str, Set[Tuple[str, ...]]]) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
         # raw_var_block_shapes maps each desc.load target var to (desc_name, block_names)
         raw_var_block_shapes: Dict[str, tuple] = {}
         for tma_info in self.tma_load_assignments:
@@ -419,15 +420,15 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         return load_map
 
     # Parse nargs['desc'].block_shape = [B1, B2, ...] assignments in a pre_hook
-    def _parse_hook_block_shape(self, hook_ast: ast.FunctionDef) -> Dict[str, List[str]]:
-        hook_desc_block_shapes_map: Dict[str, List[str]] = {}
+    def _parse_hook_desc_block_shape(self, hook_ast: ast.FunctionDef) -> Dict[str, List[List[str]]]:
+        ret: Dict[str, List[List[str]]] = {}
         for node in ast.walk(hook_ast):
             if not isinstance(node, ast.Assign) or len(node.targets) != 1:
                 continue
             t = node.targets[0]
             if not isinstance(t, ast.Attribute) or t.attr != "block_shape":
                 continue
-            # t.value should be nargs["a_desc"] or similar
+            # t.value: nargs[desc_name]
             if not isinstance(t.value, ast.Subscript):
                 continue
             sub = t.value
@@ -452,16 +453,17 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 if isinstance(elt, ast.Name):
                     desc_block_shapes.append(elt.id)
             if desc_block_shapes:
-                hook_desc_block_shapes_map[desc_name] = desc_block_shapes
-        return hook_desc_block_shapes_map
+                ret.setdefault(desc_name, []).append(desc_block_shapes)
+        return ret
 
     def analyze_desc_load_bs(
-            self, pre_hook_fn: Optional[object] = None) -> Tuple[Dict[str, Set[Tuple[str, ...]]], Dict[str, List[str]]]:
+            self, pre_hook_fn: Optional[object] = None): # -> Tuple[Dict[str, Set[Tuple[str, ...]]], Dict[str, List[str]]]:
         # 1) Build desc -> block_shape from make_tensor_descriptor definitions
-        desc_block_shapes: Dict[str, List[str]] = {}
+        desc_block_shapes: Dict[str, List[List[str]]] = {}
         for desc_name, defn in self.tma_desc_defs.items():
-            blist = defn.get("block_shape") or []
+            blist = defn.get("block_shape")
             if blist:
+                print(f"analyze_desc_load_bs: {desc_name}: {blist}")
                 desc_block_shapes[desc_name] = list[str](blist)
 
         # 2) Merge block_shape assignments from pre_hook (for TMA host descriptors)
@@ -476,40 +478,60 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     for n in ast.walk(hook_ast):
                         if not isinstance(n, ast.FunctionDef):
                             continue
-                        desc_block_shapes.update(self._parse_hook_block_shape(n))
+                        hook_desc_block_shapes_map = self._parse_hook_desc_block_shape(n)
+                        for desc_name, hook_desc_block_shapes in hook_desc_block_shapes_map.items():
+                            if desc_name in desc_block_shapes:
+                                desc_block_shapes[desc_name] += hook_desc_block_shapes
+                            else:
+                                desc_block_shapes[desc_name] = hook_desc_block_shapes
+                        print(f"analyze_desc_load_bs: {desc_block_shapes}")
                         break
             except Exception:
                 pass
 
-        # 3) Build tma_map
+        # 3) Build transpose_used_vars: {'b_t', 'a_t'}
         transpose_used_vars = set()
         for arg_node in self.transpose_args_nodes:
             for v in VariableCollector.collect(arg_node):
                 transpose_used_vars.add(v)
                 transpose_used_vars.update(self._get_dependencies_vars(v))
+        print(f"transpose_used_vars={transpose_used_vars}")
 
         # Group loads by desc_name: track whether any non-transposed load exists.
         # - If both transposed and non-transposed loads exist, or only non-transposed:
         #   use the canonical block shape as-is (matches desc.base memory layout).
         # - If only transposed loads exist:
         #   swap the block shape to recover the actual memory layout order.
+        '''
         desc_has_non_trans: Dict[str, bool] = {}
         for tma_info in self.tma_load_assignments:
             desc_name = tma_info["desc_name"]
             is_trans = tma_info["var_name"] in transpose_used_vars
+            print(f"{desc_name}, is_trans={is_trans}")
             if desc_name not in desc_has_non_trans:
                 desc_has_non_trans[desc_name] = not is_trans
             elif not is_trans:
                 desc_has_non_trans[desc_name] = True
+        '''
 
+        # 4) Build tma_map
         tma_map: Dict[str, Set[Tuple[str, ...]]] = {}
-        for desc_name, has_non_trans in desc_has_non_trans.items():
-            block_shape = list[str](desc_block_shapes.get(desc_name) or [])
+        #for desc_name, has_non_trans in desc_has_non_trans.items():
+        for tma_info in self.tma_load_assignments:
+            desc_name = tma_info["desc_name"]
+            is_trans = tma_info["var_name"] in transpose_used_vars
+            block_shapes = desc_block_shapes.get(desc_name) or []
+            print(f"{desc_name}, var={tma_info['var_name']}, is_trans={is_trans}, {block_shapes}")
+            block_shape = block_shapes[0]  # TODO
             if not block_shape:
                 continue
-            if not has_non_trans and len(block_shape) >= 2:
-                block_shape[-1], block_shape[-2] = block_shape[-2], block_shape[-1]
-            tma_map[desc_name] = {tuple(block_shape)}
+            if len(block_shape) >= 2:
+                if is_trans:
+                    block_shape[-1], block_shape[-2] = block_shape[-2], block_shape[-1]
+                    if desc_name not in tma_map:
+                        tma_map[desc_name] = {tuple(block_shape)}
+                else:
+                    tma_map[desc_name] = {tuple(block_shape)}
         return tma_map, desc_block_shapes
 
 
@@ -532,7 +554,7 @@ def analyze_kernel_dependencies(jit_fn, pre_hook_fn: Optional[object] = None) ->
         # Analyzer 2: desc.load - desc.block_shape
         tma_map, desc_block_shapes = analyzer.analyze_desc_load_bs(pre_hook_fn)
         # Analyzer 3: tl.dot M/N/K
-        bs_m_map, bs_k_map = analyzer.analyze_dot_dim(desc_block_shapes)
+        bs_m_map, bs_k_map = analyzer.analyze_dot_dim(tma_map)
         # cache
         _analysis_cache[cache_key] = (load_map, tma_map, bs_m_map, bs_k_map)
 
