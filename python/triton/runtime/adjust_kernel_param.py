@@ -327,13 +327,13 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         for tma_info in self.tma_load_assignments:
             target_var = tma_info['var_name']
             desc_name = tma_info['desc_name']
-            desc_block_shapes = list[str](desc_block_shapes.get(desc_name) or [])
-            raw_var_block_shapes[target_var] = (desc_name, desc_block_shapes)
+            desc_block_shape = list[str](desc_block_shapes.get(desc_name) or [])
+            raw_var_block_shapes[target_var] = (desc_name, desc_block_shape)
 
         # var_block_shapes: swap last two dims of src's block shape if tl.trans(src)
         var_block_shapes = dict[str, tuple](raw_var_block_shapes)
         for var_name, def_node in self.var_definitions.items():
-            if (isinstance(def_node, ast.Call) and self._is_tl_transpose(def_node) and def_node.args):
+            if isinstance(def_node, ast.Call) and self._is_tl_transpose(def_node) and def_node.args:
                 src_vars = VariableCollector.collect(def_node.args[0])
                 for src_var in src_vars:
                     if src_var in raw_var_block_shapes:
