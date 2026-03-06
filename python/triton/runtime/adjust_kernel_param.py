@@ -323,7 +323,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
     #def analyze_dot_dim(self, desc_block_shapes: Dict[str, List[str]]) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
     def analyze_dot_dim(self, tma_map: Dict[str, Set[Tuple[str, ...]]]) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
-        # tma_map already stores the canonical (non-trans) block_shape per desc,
+        # tma_map already stores the canonical block_shape per desc,
         # representing (M,K) or (K,N) in memory-layout order.
         # Map each dot operand var back to its desc_name (through desc.load
         # or tl.trans(desc.load result)), then read block_shape from tma_map.
@@ -484,7 +484,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 transpose_used_vars.add(v)
                 transpose_used_vars.update(self._get_dependencies_vars(v))
 
-        # 4) Classify each desc.load as trans or non-trans, and pair with
+        # 4) Classify each desc.load as canonical or transposed, and pair with
         #    its block_shape. For a desc with multiple candidate shapes,
         #    match each load to the shape whose block names appear in the
         #    load's address expressions (one-level definition lookup).
@@ -511,18 +511,18 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             if matched_shape:
                 desc_load_info.setdefault(desc_name, []).append((is_trans, matched_shape))
 
-        # 5) Build tma_map: prefer non-trans shape; if only trans, swap dims
+        # 5) Build tma_map: prefer canonical shape; if only transposed, swap dims
         tma_map: Dict[str, Set[Tuple[str, ...]]] = {}
         for desc_name, load_list in desc_load_info.items():
-            non_trans_shape = None
+            canonical_shape = None
             trans_shape = None
             for is_trans, shape in load_list:
                 if not is_trans:
-                    non_trans_shape = shape
+                    canonical_shape = shape
                 else:
                     trans_shape = shape
-            if non_trans_shape is not None:
-                tma_map[desc_name] = {tuple(non_trans_shape)}
+            if canonical_shape is not None:
+                tma_map[desc_name] = {tuple(canonical_shape)}
             elif trans_shape is not None:
                 swapped = list(trans_shape)
                 if len(swapped) >= 2:
