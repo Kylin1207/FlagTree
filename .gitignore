@@ -74,6 +74,8 @@ docs/python-api/generated/
 docs/dialects/
 docs/getting-started/tutorials
 docs/sg_execution_times.rst
+docs/tle/
+docs/tle_requirement_intake_template.md
 !python/tutorials/*.py
 !python/tutorials/*.rst
 
