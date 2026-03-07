@@ -52,14 +52,14 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         # for input-constexpr dependencies analyze
         self.load_addresses = list[ast.AST]()  # tl.load address expressions
         # for make_tensor_descriptor dependencies analyze
-        self.tma_args = dict[ast.AST, dict[str, list[str]]]()  # base node -> {strides, block_shape}
+        self.tma_args = dict[ast.AST, dict[str, list[str]]]()  # base node -> {strides, bshape}
         # for TMA descriptor load dependencies analyze
-        self.tma_load_assignments = list[dict[str, str | list[ast.AST]]]()  # desc.load {var_name, desc_name, addr_exprs}
+        self.tma_load_assignments = list[dict[str, str | list[ast.AST]]]()
         self.transpose_args_nodes = list[ast.AST]()  # tl.trans args
         # for tl.dot K-dim analyze
         self.dot_calls = list[ast.AST]()  # tl.dot call nodes
         # desc var -> {"shape": [...], "block_shape": [...]} from make_tensor_descriptor or hook
-        self.tma_desc_defs = dict[str, dict[str, list[str]]]()
+        self.tma_device_desc_defs_map = dict[str, dict[str, list[str]]]()
         # all historical definitions per var (in order); used for arange extraction
         # to avoid losing info when later assignments overwrite earlier ones
         self.var_all_definitions = dict[str, list[ast.AST]]()
@@ -110,7 +110,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                             if isinstance(elt, ast.Name):
                                 block_names.append(elt.id)
                 if shape_names or block_names:
-                    self.tma_desc_defs[var_name] = {"shape": shape_names, "block_shape": block_names}
+                    self.tma_device_desc_defs_map[var_name] = {"shape": shape_names, "block_shape": block_names}
 
             self.var_all_definitions.setdefault(var_name, list[ast.AST]()).append(node.value)
             self.var_definitions[var_name] = node.value
@@ -313,7 +313,6 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     var_deps.update(self._get_dependencies_vars(used_var, visited.copy()))
         return var_deps
 
-    #def analyze_dot_dim(self, desc_block_shapes: dict[str, list[str]]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     def analyze_dot_dim(self, tma_map: dict[str, set[tuple[str, ...]]]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
         # tma_map already stores the canonical block_shape per desc,
         # representing (M,K) or (K,N) in memory-layout order.
@@ -322,8 +321,8 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
         # var -> desc_name: direct desc.load assignments
         var_to_desc = dict[str, str]()
-        for tma_info in self.tma_load_assignments:
-            var_to_desc[tma_info['var_name']] = tma_info['desc_name']
+        for tma_load_assignment in self.tma_load_assignments:
+            var_to_desc[tma_load_assignment['var_name']] = tma_load_assignment['desc_name']
         # also trace through tl.trans(src) -> same desc
         for var_name, def_node in self.var_definitions.items():
             if isinstance(def_node, ast.Call) and self._is_tl_transpose(def_node) and def_node.args:
@@ -375,8 +374,8 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             bs_k_name = k_from_a if k_from_a is not None else k_from_b
             if (k_from_a is not None and k_from_b is not None and k_from_a != k_from_b):
                 if knobs.autotuning.print:
-                    print(f"Inconsistent block_shape: {k_from_a} != {k_from_b}")
-                return {}, {}  # inconsistent block_shape
+                    print(f"Inconsistent bshape: {k_from_a} != {k_from_b}")
+                return {}, {}
 
             a_tensor_param = self._resolve_tensor_param(a_desc_name)
             b_tensor_param = self._resolve_tensor_param(b_desc_name)
@@ -404,8 +403,8 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     load_map[bs_name] = ts_name
         return load_map
 
-    # Parse nargs['desc'].block_shape = [B1, B2, ...] assignments in a pre_hook
-    def _parse_hook_desc_block_shape(self, hook_ast: ast.FunctionDef) -> dict[str, list[list[str]]]:
+    # Parse nargs["a_desc"].block_shape = [BLOCK_M, BLOCK_K] in a pre_hook
+    def _parse_hook_desc_bshapes(self, hook_ast: ast.FunctionDef) -> dict[str, list[list[str]]]:
         ret = dict[str, list[list[str]]]()
         for node in ast.walk(hook_ast):
             if not isinstance(node, ast.Assign) or len(node.targets) != 1:
@@ -413,10 +412,9 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             t = node.targets[0]
             if not isinstance(t, ast.Attribute) or t.attr != "block_shape":
                 continue
-            # t.value: nargs[desc_name]
             if not isinstance(t.value, ast.Subscript):
                 continue
-            sub = t.value
+            sub = t.value  # nargs[desc_name]
             if not isinstance(sub.value, ast.Name):
                 continue
             desc_name = None
@@ -433,74 +431,89 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 continue
             if not isinstance(node.value, ast.List):
                 continue
-            desc_block_shapes = list[str]()
+            desc_bshape = list[str]()
             for elt in node.value.elts:
                 if isinstance(elt, ast.Name):
-                    desc_block_shapes.append(elt.id)
-            if desc_block_shapes:
-                ret.setdefault(desc_name, list[list[str]]()).append(desc_block_shapes)
-        return ret
+                    desc_bshape.append(elt.id)
+            if desc_bshape:  # ['BLOCK_M', 'BLOCK_K']
+                ret.setdefault(desc_name, list[list[str]]()) \
+                   .append(desc_bshape)
+        if knobs.autotuning.print:
+            # {'a_desc': [['BLOCK_M', 'BLOCK_K'], ['BLOCK_K', 'BLOCK_M']], ...}
+            print(f"[AABS] hook_desc_bshapes_map: {ret}")
+        return ret  # dict[desc_name, list[desc_bshape]]
 
     def analyze_desc_load_bs(
             self, pre_hook_fn: object | None = None) -> dict[str, set[tuple[str, ...]]]:
-        # 1) Build desc -> list of candidate block_shapes
-        desc_block_shapes = dict[str, list[list[str]]]()
-        for desc_name, defn in self.tma_desc_defs.items():
+        # 0) desc_bshapes_map: dict[desc_name, list[desc_bshape]]
+        desc_bshapes_map = dict[str, list[list[str]]]()
+
+        # 1) Build desc_bshapes_map from tma_device
+        for desc_name, defn in self.tma_device_desc_defs_map.items():
             blist = defn.get("block_shape")
             if blist:
-                desc_block_shapes[desc_name] = [list[str](blist)]
+                desc_bshapes_map[desc_name] = [list[str](blist)]
 
-        # 2) Merge block_shape assignments from pre_hook (for TMA host descriptors)
+        # 2) Extend desc_bshapes_map from tma_host pre_hook
         if pre_hook_fn is not None and hasattr(pre_hook_fn, "__code__"):
             try:
                 hook_src = inspect.getsource(pre_hook_fn)
-            except Exception:
-                hook_src = None
-            if hook_src:
-                try:
-                    hook_ast = ast.parse(hook_src)
-                    for n in ast.walk(hook_ast):
-                        if not isinstance(n, ast.FunctionDef):
-                            continue
-                        for dname, shapes in self._parse_hook_desc_block_shape(n).items():
-                            desc_block_shapes.setdefault(dname, list[list[str]]()).extend(shapes)
-                        break
-                except Exception:
-                    pass
+                hook_ast = ast.parse(hook_src)
+                for n in ast.walk(hook_ast):
+                    if not isinstance(n, ast.FunctionDef):
+                        continue
+                    hook_desc_bshapes_map = self._parse_hook_desc_bshapes(n)
+                    for desc_name, hook_desc_bshapes in hook_desc_bshapes_map.items():
+                        desc_bshapes_map.setdefault(desc_name, list[list[str]]()) \
+                                             .extend(hook_desc_bshapes)
+                    break
+            except Exception as e:
+                if knobs.autotuning.print:
+                    print(f"[AABS] Warning: Parse tma_host desc_bshapes_map failed: {e}")
+                pass
 
         # 3) Build transpose_used_vars
-        transpose_used_vars = set[str]()
+        transpose_used_vars = set[str]()  # set[trans_var_name]
         for arg_node in self.transpose_args_nodes:
             for v in VariableCollector.collect(arg_node):
                 transpose_used_vars.add(v)
                 transpose_used_vars.update(self._get_dependencies_vars(v))
+        if knobs.autotuning.print:
+            # {'a_t', 'b_t'}
+            print(f"[AABS] transpose_used_vars={transpose_used_vars}")
 
-        # 4) Classify each desc.load as canonical or transposed, and pair with
-        #    its block_shape. For a desc with multiple candidate shapes,
-        #    match each load to the shape whose block names appear in the
-        #    load's address expressions (one-level definition lookup).
-        all_block_names = set[str]()
-        for shapes in desc_block_shapes.values():
-            for s in shapes:
-                all_block_names.update(s)
-
-        # Per desc: collect (is_trans, block_shape) pairs
+        # 4) Build desc_load_info: dict[desc_name, list[tuple[is_trans, bshape]]]
         desc_load_info = dict[str, list[tuple[bool, list[str]]]]()
-        for tma_info in self.tma_load_assignments:
-            desc_name = tma_info["desc_name"]
-            is_trans = tma_info["var_name"] in transpose_used_vars
-            candidates = desc_block_shapes.get(desc_name) or []
+        if knobs.autotuning.print and self.tma_load_assignments:
+            # [{'var_name': 'a', 'desc_name': 'a_desc', 'addr_exprs': [offset_am, offset_ak]},
+            #  {'var_name': 'a_t', 'desc_name': 'a_desc', 'addr_exprs': [offset_ak, offset_am]}, ...]
+            print(f"[AABS] tma_load_assignments={self.tma_load_assignments}")
+        for tma_load_assignment in self.tma_load_assignments:
+            desc_name = tma_load_assignment["desc_name"]
+            var_name = tma_load_assignment["var_name"]
+            is_trans = var_name in transpose_used_vars
+            candidate_bshapes = desc_bshapes_map.get(desc_name) or []
+            # candidate_bshapes: [['BLOCK_M', 'BLOCK_K'], ['BLOCK_K', 'BLOCK_M']]
+            candidate_bs_names = set[str]()  # {'BLOCK_M', 'BLOCK_K'}
+            for candidate_bshape in candidate_bshapes:
+                candidate_bs_names.update(candidate_bshape)
 
-            if len(candidates) == 1:
-                matched_shape = list[str](candidates[0])
-            elif len(candidates) > 1:
-                matched_shape = self._match_block_shape_by_addr(
-                    tma_info.get("addr_exprs") or [], candidates, all_block_names)
+            if len(candidate_bshapes) == 1:
+                matched_bshape = list[str](candidate_bshapes[0])
+            elif len(candidate_bshapes) > 1:
+                # var_name='a',   desc_name='a_desc', is_trans=False, matched_bshape=['BLOCK_M', 'BLOCK_K']
+                # var_name='a_t', desc_name='a_desc', is_trans=True,  matched_bshape=['BLOCK_K', 'BLOCK_M']
+                matched_bshape = self._match_bshape_by_addr(
+                    tma_load_assignment.get("addr_exprs") or [],
+                    candidate_bshapes, candidate_bs_names)
             else:
-                matched_shape = list[str]()
+                matched_bshape = list[str]()
 
-            if matched_shape:
-                desc_load_info.setdefault(desc_name, list[tuple[bool, list[str]]]()).append((is_trans, matched_shape))
+            if matched_bshape:
+                desc_load_info.setdefault(desc_name, list[tuple[bool, list[str]]]()) \
+                              .append((is_trans, matched_bshape))
+        # {'a_desc': [(False, ['BLOCK_M', 'BLOCK_K']), (True, ['BLOCK_K', 'BLOCK_M'])], ...}
+        print(f"desc_load_info={desc_load_info}")
 
         # 5) Build tma_map: prefer canonical shape; if only transposed, swap dims
         tma_map = dict[str, set[tuple[str, ...]]]()
@@ -519,28 +532,52 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 if len(swapped) >= 2:
                     swapped[-1], swapped[-2] = swapped[-2], swapped[-1]
                 tma_map[desc_name] = {tuple(swapped)}
-
         return tma_map
 
-    def _match_block_shape_by_addr(
-            self, addr_exprs: list, candidates: list[list[str]],
-            all_block_names: set[str]) -> list[str]:
-        """Match addr_exprs to a candidate block_shape by checking which block
-        names appear in each address position (one-level definition lookup)."""
-        inferred = list[str]()
+    def _match_bshape_by_addr(self, addr_exprs: list,
+                              candidate_bshapes: list[list[str]],
+                              candidate_bs_names: set[str]) -> list[str]:
+        # candidate_bshapes: [['BLOCK_M', 'BLOCK_K'], ['BLOCK_K', 'BLOCK_M']]
+        # candidate_bs_names: {'BLOCK_K', 'BLOCK_M'}
+        matched_bshape = list[str | set[str]]()
         for addr_expr in addr_exprs:
-            vars_in_addr = VariableCollector.collect(addr_expr)
+            var_names = VariableCollector.collect(addr_expr)
             if isinstance(addr_expr, ast.Name) and addr_expr.id in self.var_definitions:
-                vars_in_addr |= VariableCollector.collect(self.var_definitions[addr_expr.id])
-            matched = vars_in_addr & all_block_names
-            if len(matched) == 1:
-                inferred.append(matched.pop())
+                var_names |= VariableCollector.collect(self.var_definitions[addr_expr.id])
+            # var_names: {'pid_m', 'tl', 'BLOCK_M', 'offset_am'} => matched: {'BLOCK_M'}
+            # var_names: {'BLOCK_K', 'tl', 'offset_ak', 'k'} => matched: {'BLOCK_K'}
+            matched_bs_set = var_names & candidate_bs_names
+            if len(matched_bs_set) == 1:
+                # matched_bs_set: {'BLOCK_M'}
+                # matched_bs_set: {'BLOCK_K'}
+                matched_bshape.append(matched_bs_set.pop())
             else:
-                return list[str](candidates[0]) if candidates else list[str]()
-        for cand in candidates:
-            if cand == inferred:
-                return list[str](cand)
-        return list[str](candidates[0]) if candidates else list[str]()
+                matched_bshape.append(matched_bs_set)
+        # matched_bshape = ['BLOCK_M', 'BLOCK_K']
+        for candidate_bshape in candidate_bshapes:
+            if len(candidate_bshape) == 0:
+                if knobs.autotuning.print:
+                    print(f"[AABS] Warning: candidate_bshape={candidate_bshape}")
+                continue
+            if candidate_bshape == matched_bshape:
+                return list[str](candidate_bshape)
+            if len(candidate_bshape) == len(matched_bshape):
+                matched = True
+                for i in range(len(candidate_bshape)):
+                    candidate_bs = candidate_bshape[i]
+                    matched_bs_or_set = matched_bshape[i]
+                    if isinstance(matched_bs_or_set, set):
+                        if candidate_bs not in matched_bs_or_set:
+                            matched = False
+                            break
+                    elif candidate_bs != matched_bs_or_set:
+                        matched = False
+                        break
+                if matched:
+                    return list[str](candidate_bshape)
+        if knobs.autotuning.print:
+            print(f"[AABS] Warning: _match_bshape_by_addr failed")
+        return list[str](candidate_bshapes[0]) if candidate_bshapes else list[str]()
 
 
 _analysis_cache = dict[int, tuple]()
