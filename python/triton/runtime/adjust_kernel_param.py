@@ -1,6 +1,5 @@
 import ast
 import inspect
-from typing import Dict, Set, Optional, Tuple, List
 from triton import knobs
 
 
@@ -12,7 +11,7 @@ from triton import knobs
 class VariableCollector(ast.NodeVisitor):
 
     def __init__(self):
-        self.variables: Set[str] = set[str]()
+        self.variables = set[str]()
 
     def visit_Name(self, node):
         if isinstance(node.ctx, ast.Load):
@@ -38,7 +37,7 @@ class VariableCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     @staticmethod
-    def collect(node) -> Set[str]:
+    def collect(node) -> set[str]:
         collector = VariableCollector()
         collector.visit(node)
         return collector.variables
@@ -47,23 +46,23 @@ class VariableCollector(ast.NodeVisitor):
 class KernelDependencyAnalyzer(ast.NodeVisitor):
 
     def __init__(self):
-        self.input_params: Set[str] = set[str]()  # input params
-        self.constexpr_params: Set[str] = set[str]()  # constexpr params
-        self.var_definitions: Dict[str, ast.AST] = {}  # var -> latest definition node
+        self.input_params = set[str]()  # input params
+        self.constexpr_params = set[str]()  # constexpr params
+        self.var_definitions = dict[str, ast.AST]()  # var -> latest definition node
         # for input-constexpr dependencies analyze
-        self.load_addresses: list = []  # tl.load address expressions
+        self.load_addresses = list[ast.AST]()  # tl.load address expressions
         # for make_tensor_descriptor dependencies analyze
-        self.tma_args = {}  # tl.make_tensor_descriptor base node -> {strides: [...], block_shape: [...]}
+        self.tma_args = dict[ast.AST, dict[str, list[str]]]()  # base node -> {strides, block_shape}
         # for TMA descriptor load dependencies analyze
-        self.tma_load_assignments = []  # desc.load {var_name, desc_name, addr_exprs}
-        self.transpose_args_nodes = []  # tl.trans args
+        self.tma_load_assignments = list[dict[str, str | list[ast.AST]]]()  # desc.load {var_name, desc_name, addr_exprs}
+        self.transpose_args_nodes = list[ast.AST]()  # tl.trans args
         # for tl.dot K-dim analyze
-        self.dot_calls: list = []  # tl.dot call nodes
+        self.dot_calls = list[ast.AST]()  # tl.dot call nodes
         # desc var -> {"shape": [...], "block_shape": [...]} from make_tensor_descriptor or hook
-        self.tma_desc_defs: Dict[str, Dict[str, List[str]]] = {}
+        self.tma_desc_defs = dict[str, dict[str, list[str]]]()
         # all historical definitions per var (in order); used for arange extraction
         # to avoid losing info when later assignments overwrite earlier ones
-        self.var_all_definitions: Dict[str, List[ast.AST]] = {}
+        self.var_all_definitions = dict[str, list[ast.AST]]()
 
     # Collect function parameters and mark constexpr ones
     def visit_FunctionDef(self, node):
@@ -99,8 +98,8 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
             # TMA device: record LHS name + shape/block_shape from make_tensor_descriptor
             if (isinstance(node.value, ast.Call) and self._is_tl_make_tensor_descriptor(node.value)):
-                shape_names = []
-                block_names = []
+                shape_names = list[str]()
+                block_names = list[str]()
                 for kw in node.value.keywords:
                     if getattr(kw, 'arg', None) == 'shape' and isinstance(kw.value, ast.List):
                         for elt in kw.value.elts:
@@ -113,7 +112,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 if shape_names or block_names:
                     self.tma_desc_defs[var_name] = {"shape": shape_names, "block_shape": block_names}
 
-            self.var_all_definitions.setdefault(var_name, []).append(node.value)
+            self.var_all_definitions.setdefault(var_name, list[ast.AST]()).append(node.value)
             self.var_definitions[var_name] = node.value
         self.generic_visit(node)
 
@@ -206,7 +205,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         return self._is_tl_func(node, 'trans')
 
     # Resolve a symbol (e.g. a local TMA desc var) to its underlying tensor input param
-    def _resolve_tensor_param(self, symbol: Optional[str]) -> Optional[str]:
+    def _resolve_tensor_param(self, symbol: str | None) -> str | None:
         if not symbol:
             return None
 
@@ -226,7 +225,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         # Fallback: find the unique input param via dependency analysis
         input_deps, _ = self.get_dependencies(symbol)
         if len(input_deps) == 1:
-            return list(input_deps)[0]
+            return list[str](input_deps)[0]
 
         return None
 
@@ -236,15 +235,15 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
     def _is_tl_arange(self, node) -> bool:
         return isinstance(node, ast.Call) and self._is_tl_func(node, 'arange')
 
-    def _extract_arange_bs(self, node: ast.AST) -> Set[str]:
-        out: Set[str] = set[str]()
+    def _extract_arange_bs(self, node: ast.AST) -> set[str]:
+        out = set[str]()
         for child in ast.walk(node):
             if isinstance(child, ast.Call) and self._is_tl_arange(child) and len(child.args) >= 2:
                 if isinstance(child.args[1], ast.Name):
                     out.add(child.args[1].id)
         return out
 
-    def _extract_arange_bs_recursive(self, var_name: str, visited: Optional[Set[str]] = None) -> Set[str]:
+    def _extract_arange_bs_recursive(self, var_name: str, visited: set[str] | None = None) -> set[str]:
         if visited is None:
             visited = set[str]()
         if var_name in visited:
@@ -259,7 +258,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     ret.update(self._extract_arange_bs_recursive(child_var, visited.copy()))
         return ret
 
-    def get_dependencies(self, var_name: str, visited: Optional[Set[str]] = None) -> tuple[Set[str], Set[str]]:
+    def get_dependencies(self, var_name: str, visited: set[str] | None = None) -> tuple[set[str], set[str]]:
         if visited is None:
             visited = set[str]()
         if var_name in visited:
@@ -291,14 +290,14 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     constexpr_deps.update(sub_constexprs)
         return input_deps, constexpr_deps
 
-    def _get_dependencies_vars(self, var_name: str, visited: Optional[Set[str]] = None) -> Set[str]:
+    def _get_dependencies_vars(self, var_name: str, visited: set[str] | None = None) -> set[str]:
         if visited is None:
             visited = set[str]()
         if var_name in visited:
             return set[str]()
         visited.add(var_name)
 
-        var_deps = set()
+        var_deps = set[str]()
 
         # Check if it is an input or constexpr parameter
         if (var_name in self.input_params) or (var_name in self.constexpr_params):
@@ -314,15 +313,15 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     var_deps.update(self._get_dependencies_vars(used_var, visited.copy()))
         return var_deps
 
-    #def analyze_dot_dim(self, desc_block_shapes: Dict[str, List[str]]) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
-    def analyze_dot_dim(self, tma_map: Dict[str, Set[Tuple[str, ...]]]) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+    #def analyze_dot_dim(self, desc_block_shapes: dict[str, list[str]]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    def analyze_dot_dim(self, tma_map: dict[str, set[tuple[str, ...]]]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
         # tma_map already stores the canonical block_shape per desc,
         # representing (M,K) or (K,N) in memory-layout order.
         # Map each dot operand var back to its desc_name (through desc.load
         # or tl.trans(desc.load result)), then read block_shape from tma_map.
 
         # var -> desc_name: direct desc.load assignments
-        var_to_desc: Dict[str, str] = {}
+        var_to_desc = dict[str, str]()
         for tma_info in self.tma_load_assignments:
             var_to_desc[tma_info['var_name']] = tma_info['desc_name']
         # also trace through tl.trans(src) -> same desc
@@ -333,19 +332,18 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                         var_to_desc[var_name] = var_to_desc[src_var]
                         break
 
-        def _get_desc_bs(var_node) -> Optional[Tuple[str, List[str]]]:
+        def _get_desc_bs(var_node) -> tuple[str, list[str]] | None:
             for v in VariableCollector.collect(var_node):
                 if v in var_to_desc:
                     dn = var_to_desc[v]
                     bs_set = tma_map.get(dn)
                     if bs_set:
-                        return (dn, list(next(iter(bs_set))))
+                        return (dn, list[str](next(iter(bs_set))))
             return None
 
         # tl.dot(a, b): a (M, K), b (K, N).
-        bs_m_map: Dict[str, Set[str]] = {}
-        bs_k_map: Dict[str, Set[str]] = {}
-        has_inconsistent = False
+        bs_m_map = dict[str, set[str]]()
+        bs_k_map = dict[str, set[str]]()
         for dot_node in self.dot_calls:
             args = dot_node.args
             if len(args) < 2:
@@ -364,7 +362,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     m_from_a = a_bs[0]
                     a_tensor_param_for_m = self._resolve_tensor_param(a_desc_name)
                     if m_from_a is not None and a_tensor_param_for_m is not None:
-                        bs_m_map.setdefault(m_from_a, set()).add(a_tensor_param_for_m)
+                        bs_m_map.setdefault(m_from_a, set[str]()).add(a_tensor_param_for_m)
                     k_from_a = a_bs[-1]
 
             # b: shape (K, N) -> block_shape[0]=K
@@ -376,23 +374,23 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
             bs_k_name = k_from_a if k_from_a is not None else k_from_b
             if (k_from_a is not None and k_from_b is not None and k_from_a != k_from_b):
-                has_inconsistent = True
+                if knobs.autotuning.print:
+                    print(f"Inconsistent block_shape: {k_from_a} != {k_from_b}")
+                return {}, {}  # inconsistent block_shape
 
             a_tensor_param = self._resolve_tensor_param(a_desc_name)
             b_tensor_param = self._resolve_tensor_param(b_desc_name)
 
             if bs_k_name is not None:
                 if a_tensor_param is not None:
-                    bs_k_map.setdefault(bs_k_name, set()).add(a_tensor_param)
+                    bs_k_map.setdefault(bs_k_name, set[str]()).add(a_tensor_param)
                 if b_tensor_param is not None:
-                    bs_k_map.setdefault(bs_k_name, set()).add(b_tensor_param)
+                    bs_k_map.setdefault(bs_k_name, set[str]()).add(b_tensor_param)
 
-        if has_inconsistent:
-            return {}, {}
         return bs_m_map, bs_k_map
 
-    def analyze_tl_load_bs(self) -> Dict[str, str]:
-        load_map: Dict[str, str] = {}
+    def analyze_tl_load_bs(self) -> dict[str, str]:
+        load_map = dict[str, str]()
         for addr_expr in self.load_addresses:
             used_vars = VariableCollector.collect(addr_expr)
             for var_name in used_vars:
@@ -407,8 +405,8 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         return load_map
 
     # Parse nargs['desc'].block_shape = [B1, B2, ...] assignments in a pre_hook
-    def _parse_hook_desc_block_shape(self, hook_ast: ast.FunctionDef) -> Dict[str, List[List[str]]]:
-        ret: Dict[str, List[List[str]]] = {}
+    def _parse_hook_desc_block_shape(self, hook_ast: ast.FunctionDef) -> dict[str, list[list[str]]]:
+        ret = dict[str, list[list[str]]]()
         for node in ast.walk(hook_ast):
             if not isinstance(node, ast.Assign) or len(node.targets) != 1:
                 continue
@@ -435,22 +433,22 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 continue
             if not isinstance(node.value, ast.List):
                 continue
-            desc_block_shapes = []
+            desc_block_shapes = list[str]()
             for elt in node.value.elts:
                 if isinstance(elt, ast.Name):
                     desc_block_shapes.append(elt.id)
             if desc_block_shapes:
-                ret.setdefault(desc_name, []).append(desc_block_shapes)
+                ret.setdefault(desc_name, list[list[str]]()).append(desc_block_shapes)
         return ret
 
     def analyze_desc_load_bs(
-            self, pre_hook_fn: Optional[object] = None) -> Dict[str, Set[Tuple[str, ...]]]:
+            self, pre_hook_fn: object | None = None) -> dict[str, set[tuple[str, ...]]]:
         # 1) Build desc -> list of candidate block_shapes
-        desc_block_shapes: Dict[str, List[List[str]]] = {}
+        desc_block_shapes = dict[str, list[list[str]]]()
         for desc_name, defn in self.tma_desc_defs.items():
             blist = defn.get("block_shape")
             if blist:
-                desc_block_shapes[desc_name] = [list(blist)]
+                desc_block_shapes[desc_name] = [list[str](blist)]
 
         # 2) Merge block_shape assignments from pre_hook (for TMA host descriptors)
         if pre_hook_fn is not None and hasattr(pre_hook_fn, "__code__"):
@@ -465,13 +463,13 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                         if not isinstance(n, ast.FunctionDef):
                             continue
                         for dname, shapes in self._parse_hook_desc_block_shape(n).items():
-                            desc_block_shapes.setdefault(dname, []).extend(shapes)
+                            desc_block_shapes.setdefault(dname, list[list[str]]()).extend(shapes)
                         break
                 except Exception:
                     pass
 
         # 3) Build transpose_used_vars
-        transpose_used_vars: Set[str] = set()
+        transpose_used_vars = set[str]()
         for arg_node in self.transpose_args_nodes:
             for v in VariableCollector.collect(arg_node):
                 transpose_used_vars.add(v)
@@ -481,31 +479,31 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         #    its block_shape. For a desc with multiple candidate shapes,
         #    match each load to the shape whose block names appear in the
         #    load's address expressions (one-level definition lookup).
-        all_block_names: Set[str] = set()
+        all_block_names = set[str]()
         for shapes in desc_block_shapes.values():
             for s in shapes:
                 all_block_names.update(s)
 
         # Per desc: collect (is_trans, block_shape) pairs
-        desc_load_info: Dict[str, List[Tuple[bool, List[str]]]] = {}
+        desc_load_info = dict[str, list[tuple[bool, list[str]]]]()
         for tma_info in self.tma_load_assignments:
             desc_name = tma_info["desc_name"]
             is_trans = tma_info["var_name"] in transpose_used_vars
             candidates = desc_block_shapes.get(desc_name) or []
 
             if len(candidates) == 1:
-                matched_shape = list(candidates[0])
+                matched_shape = list[str](candidates[0])
             elif len(candidates) > 1:
                 matched_shape = self._match_block_shape_by_addr(
                     tma_info.get("addr_exprs") or [], candidates, all_block_names)
             else:
-                matched_shape = []
+                matched_shape = list[str]()
 
             if matched_shape:
-                desc_load_info.setdefault(desc_name, []).append((is_trans, matched_shape))
+                desc_load_info.setdefault(desc_name, list[tuple[bool, list[str]]]()).append((is_trans, matched_shape))
 
         # 5) Build tma_map: prefer canonical shape; if only transposed, swap dims
-        tma_map: Dict[str, Set[Tuple[str, ...]]] = {}
+        tma_map = dict[str, set[tuple[str, ...]]]()
         for desc_name, load_list in desc_load_info.items():
             canonical_shape = None
             trans_shape = None
@@ -517,7 +515,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             if canonical_shape is not None:
                 tma_map[desc_name] = {tuple(canonical_shape)}
             elif trans_shape is not None:
-                swapped = list(trans_shape)
+                swapped = list[str](trans_shape)
                 if len(swapped) >= 2:
                     swapped[-1], swapped[-2] = swapped[-2], swapped[-1]
                 tma_map[desc_name] = {tuple(swapped)}
@@ -525,11 +523,11 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         return tma_map
 
     def _match_block_shape_by_addr(
-            self, addr_exprs: list, candidates: List[List[str]],
-            all_block_names: Set[str]) -> List[str]:
+            self, addr_exprs: list, candidates: list[list[str]],
+            all_block_names: set[str]) -> list[str]:
         """Match addr_exprs to a candidate block_shape by checking which block
         names appear in each address position (one-level definition lookup)."""
-        inferred: List[str] = []
+        inferred = list[str]()
         for addr_expr in addr_exprs:
             vars_in_addr = VariableCollector.collect(addr_expr)
             if isinstance(addr_expr, ast.Name) and addr_expr.id in self.var_definitions:
@@ -538,18 +536,18 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             if len(matched) == 1:
                 inferred.append(matched.pop())
             else:
-                return list(candidates[0]) if candidates else []
+                return list[str](candidates[0]) if candidates else list[str]()
         for cand in candidates:
             if cand == inferred:
-                return list(cand)
-        return list(candidates[0]) if candidates else []
+                return list[str](cand)
+        return list[str](candidates[0]) if candidates else list[str]()
 
 
-_analysis_cache: Dict[int, Tuple] = {}
+_analysis_cache = dict[int, tuple]()
 
 
 # Analyzer
-def analyze_kernel_dependencies(jit_fn, pre_hook_fn: Optional[object] = None) -> Tuple:
+def analyze_kernel_dependencies(jit_fn, pre_hook_fn: object | None = None) -> tuple:
     cache_key = (id(jit_fn), id(pre_hook_fn) if pre_hook_fn is not None else None)
     if cache_key in _analysis_cache:
         return _analysis_cache[cache_key]
@@ -721,7 +719,7 @@ def auto_adjust_block_sizes(nargs, fn, configs, current, config):
         if nargs:
             import torch
             from triton.tools.tensor_descriptor import TensorDescriptor
-            nargs_parts = []
+            nargs_parts = list[str]()
             for k, v in nargs.items():
                 if isinstance(v, (torch.Tensor, TensorDescriptor)):
                     nargs_parts.append(k)
