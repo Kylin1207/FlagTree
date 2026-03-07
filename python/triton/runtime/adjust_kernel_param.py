@@ -33,7 +33,7 @@ class VariableCollector(ast.NodeVisitor):
         # For tl.arange, skip module prefix 'tl'; for a.b collect 'a'
         if isinstance(node.value, ast.Name):
             # Skip module prefixes like tl, np, etc.
-            if node.value.id not in ('tl', 'triton', 'np', 'torch'):
+            if node.value.id not in ('tl', 'triton', 'language', 'np', 'torch'):
                 self.variables.add(node.value.id)
         self.generic_visit(node)
 
@@ -172,37 +172,38 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                             self.tma_args[base][kw.arg].append(elt)
         self.generic_visit(node)
 
-    # Return True if node is tl.load(...)
+    # Check if a Call node refers to triton.language.<func_name>.
+    # Covers: tl.f(), language.f(), triton.language.f(), f()
+    @staticmethod
+    def _is_tl_func(node, func_name: str) -> bool:
+        func = node.func
+        # tl.f() / language.f()
+        if isinstance(func, ast.Attribute) and func.attr == func_name:
+            if isinstance(func.value, ast.Name):
+                return func.value.id in ('tl', 'language', 'triton')
+            # triton.language.f()
+            if (isinstance(func.value, ast.Attribute) and func.value.attr == 'language'
+                    and isinstance(func.value.value, ast.Name) and func.value.value.id == 'triton'):
+                return True
+        # f() (bare import)
+        if isinstance(func, ast.Name) and func.id == func_name:
+            return True
+        return False
+
     def _is_tl_load(self, node) -> bool:
-        if isinstance(node.func, ast.Attribute):
-            if node.func.attr == 'load':
-                if isinstance(node.func.value, ast.Name):
-                    return node.func.value.id in ('tl', 'language')
-        return False
+        return self._is_tl_func(node, 'load')
 
-    # Return True if node is desc.load(...)
+    # desc.load(...) — any .load() that is NOT triton.language.load
     def _is_tma_load(self, node) -> bool:
-        if isinstance(node.func, ast.Attribute):
-            if node.func.attr == 'load':
-                if isinstance(node.func.value, ast.Name):
-                    return node.func.value.id not in ('tl', 'language')
+        if isinstance(node.func, ast.Attribute) and node.func.attr == 'load':
+            return not self._is_tl_func(node, 'load')
         return False
 
-    # Return True if node is tl.make_tensor_descriptor(...)
     def _is_tl_make_tensor_descriptor(self, node) -> bool:
-        if isinstance(node.func, ast.Attribute):
-            if node.func.attr == 'make_tensor_descriptor':
-                if isinstance(node.func.value, ast.Name):
-                    return node.func.value.id in ('tl', 'language')
-        return False
+        return self._is_tl_func(node, 'make_tensor_descriptor')
 
-    # Return True if node is tl.trans(...)
     def _is_tl_transpose(self, node) -> bool:
-        if isinstance(node.func, ast.Attribute):
-            if node.func.attr == 'trans':
-                if isinstance(node.func.value, ast.Name):
-                    return node.func.value.id in ('tl', 'language')
-        return False
+        return self._is_tl_func(node, 'trans')
 
     # Resolve a symbol (e.g. a local TMA desc var) to its underlying tensor input param
     def _resolve_tensor_param(self, symbol: Optional[str]) -> Optional[str]:
@@ -230,18 +231,10 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         return None
 
     def _is_tl_dot(self, node) -> bool:
-        if isinstance(node.func, ast.Attribute):
-            if node.func.attr == 'dot':
-                if isinstance(node.func.value, ast.Name):
-                    return node.func.value.id in ('tl', 'triton')
-        return False
+        return self._is_tl_func(node, 'dot')
 
     def _is_tl_arange(self, node) -> bool:
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            if node.func.attr == 'arange':
-                if isinstance(node.func.value, ast.Name):
-                    return node.func.value.id in ('tl', 'triton')
-        return False
+        return isinstance(node, ast.Call) and self._is_tl_func(node, 'arange')
 
     def _extract_arange_bs(self, node: ast.AST) -> Set[str]:
         out: Set[str] = set[str]()
