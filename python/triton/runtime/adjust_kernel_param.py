@@ -440,21 +440,21 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                    .append(desc_bshape)
         if knobs.autotuning.print:
             # {'a_desc': [['BLOCK_M', 'BLOCK_K'], ['BLOCK_K', 'BLOCK_M']], ...}
-            print(f"[AABS] hook_desc_bshapes_map: {ret}")
+            print(f"[Analyzer] hook_desc_bshapes_map = {ret}")
         return ret  # dict[desc_name, list[desc_bshape]]
 
     def analyze_desc_load_bs(
             self, pre_hook_fn: object | None = None) -> dict[str, set[tuple[str, ...]]]:
-        # 0) desc_bshapes_map: dict[desc_name, list[desc_bshape]]
+        # 2.0) desc_bshapes_map: dict[desc_name, list[desc_bshape]]
         desc_bshapes_map = dict[str, list[list[str]]]()
 
-        # 1) Build desc_bshapes_map from tma_device
+        # 2.1) Build desc_bshapes_map from tma_device
         for desc_name, defn in self.tma_device_desc_defs_map.items():
             blist = defn.get("block_shape")
             if blist:
                 desc_bshapes_map[desc_name] = [list[str](blist)]
 
-        # 2) Extend desc_bshapes_map from tma_host pre_hook
+        # 2.2) Extend desc_bshapes_map from tma_host pre_hook
         if pre_hook_fn is not None and hasattr(pre_hook_fn, "__code__"):
             try:
                 hook_src = inspect.getsource(pre_hook_fn)
@@ -472,7 +472,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     print(f"[AABS] Warning: Parse tma_host desc_bshapes_map failed: {e}")
                 pass
 
-        # 3) Build transpose_used_vars
+        # 2.3) Build transpose_used_vars
         transpose_used_vars = set[str]()  # set[trans_var_name]
         for arg_node in self.transpose_args_nodes:
             for v in VariableCollector.collect(arg_node):
@@ -480,14 +480,14 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 transpose_used_vars.update(self._get_dependencies_vars(v))
         if knobs.autotuning.print:
             # {'a_t', 'b_t'}
-            print(f"[AABS] transpose_used_vars={transpose_used_vars}")
+            print(f"[Analyzer] transpose_used_vars = {transpose_used_vars}")
 
-        # 4) Build desc_load_info: dict[desc_name, list[tuple[is_trans, bshape]]]
-        desc_load_info = dict[str, list[tuple[bool, list[str]]]]()
+        # 2.4) Build desc_load_info_map: dict[desc_name, list[tuple[is_trans, bshape]]]
+        desc_load_info_map = dict[str, list[tuple[bool, list[str]]]]()
         if knobs.autotuning.print and self.tma_load_assignments:
             # [{'var_name': 'a', 'desc_name': 'a_desc', 'addr_exprs': [offset_am, offset_ak]},
             #  {'var_name': 'a_t', 'desc_name': 'a_desc', 'addr_exprs': [offset_ak, offset_am]}, ...]
-            print(f"[AABS] tma_load_assignments={self.tma_load_assignments}")
+            print(f"[Analyzer] tma_load_assignments = {self.tma_load_assignments}")
         for tma_load_assignment in self.tma_load_assignments:
             desc_name = tma_load_assignment["desc_name"]
             var_name = tma_load_assignment["var_name"]
@@ -497,7 +497,6 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             candidate_bs_names = set[str]()  # {'BLOCK_M', 'BLOCK_K'}
             for candidate_bshape in candidate_bshapes:
                 candidate_bs_names.update(candidate_bshape)
-
             if len(candidate_bshapes) == 1:
                 matched_bshape = list[str](candidate_bshapes[0])
             elif len(candidate_bshapes) > 1:
@@ -508,16 +507,16 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     candidate_bshapes, candidate_bs_names)
             else:
                 matched_bshape = list[str]()
-
             if matched_bshape:
-                desc_load_info.setdefault(desc_name, list[tuple[bool, list[str]]]()) \
-                              .append((is_trans, matched_bshape))
-        # {'a_desc': [(False, ['BLOCK_M', 'BLOCK_K']), (True, ['BLOCK_K', 'BLOCK_M'])], ...}
-        print(f"desc_load_info={desc_load_info}")
+                desc_load_info_map.setdefault(desc_name, list[tuple[bool, list[str]]]()) \
+                                  .append((is_trans, matched_bshape))
+        if knobs.autotuning.print:
+            # {'a_desc': [(False, ['BLOCK_M', 'BLOCK_K']), (True, ['BLOCK_K', 'BLOCK_M'])], ...}
+            print(f"[Analyzer] desc_load_info_map = {desc_load_info_map}")
 
-        # 5) Build tma_map: prefer canonical shape; if only transposed, swap dims
-        tma_map = dict[str, set[tuple[str, ...]]]()
-        for desc_name, load_list in desc_load_info.items():
+        # 2.5) Build tma_map: prefer canonical shape; if only transposed, swap dims
+        tma_map = dict[str, set[tuple[str, ...]]]()  # dict[desc_name, set[tuple[bshapes]]]
+        for desc_name, load_list in desc_load_info_map.items():
             canonical_shape = None
             trans_shape = None
             for is_trans, shape in load_list:
@@ -532,6 +531,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 if len(swapped) >= 2:
                     swapped[-1], swapped[-2] = swapped[-2], swapped[-1]
                 tma_map[desc_name] = {tuple(swapped)}
+        # {'a_desc', {('BLOCK_M', 'BLOCK_K')}, ...}
         return tma_map
 
     def _match_bshape_by_addr(self, addr_exprs: list,
@@ -604,22 +604,23 @@ def analyze_kernel_dependencies(jit_fn, pre_hook_fn: object | None = None) -> tu
         _analysis_cache[cache_key] = (load_map, tma_map, bs_m_map, bs_k_map)
 
         if knobs.autotuning.print:
+            jit_fn_name = getattr(jit_fn, '__name__', 'unknown')
             if load_map:
                 print(
-                    f"\n=== FlagTree adjust_kernel_param tl.load (by tl.arange): {getattr(jit_fn, '__name__', 'unknown')} ==="
+                    f"\n=== [Analyzer] tl.load (by tl.arange): {jit_fn_name} ==="
                 )
                 for bs_name, ts_name in load_map.items():
-                    print(f"  load_map[bs_name, ts_name]: '{bs_name}' -> '{ts_name}'")
+                    print(f"  load_map[bs_name, ts_name] = '{bs_name}' -> '{ts_name}'")
             if tma_map:
                 print(
-                    f"\n=== FlagTree adjust_kernel_param desc.load (by block_shape): {getattr(jit_fn, '__name__', 'unknown')} ==="
+                    f"\n=== [Analyzer] desc.load (by block_shape): {jit_fn_name} ==="
                 )
                 for desc_name, bs_names_set in tma_map.items():
-                    print(f"  tma_map[desc_name, set[block_shapes]]: '{desc_name}' -> {bs_names_set}")
+                    print(f"  tma_map[desc_name, set[bshapes]] = '{desc_name}' -> {bs_names_set}")
             if bs_m_map or bs_k_map:
-                print(f"\n=== FlagTree adjust_kernel_param tl.dot: {getattr(jit_fn, '__name__', 'unknown')} ===")
-                print(f"  bs_m_map[bs_name, set[param_name]]: {bs_m_map}")
-                print(f"  bs_k_map[bs_name, set[param_name]]: {bs_k_map}")
+                print(f"\n=== [Analyzer] tl.dot: {jit_fn_name} ===")
+                print(f"  bs_m_map[bs_name, set[param_name]] = {bs_m_map}")
+                print(f"  bs_k_map[bs_name, set[param_name]] = {bs_k_map}")
             print("==============================================================\n")
 
         return (load_map, tma_map, bs_m_map, bs_k_map)
@@ -748,6 +749,10 @@ def auto_adjust_block_sizes(nargs, fn, configs, current, config):
         for desc_name, bs_names_set in tma_map.items():
             for bs_names in bs_names_set:
                 adjust_block_size_tma(nargs, current, config, desc_name, bs_names)
+
+    if bs_k_map or bs_m_map:
+        if knobs.autotuning.print:
+            print("[AABS] 3. adjust bs in tl.dot")
         adjust_block_size_dot_k_dim(nargs, current, config, bs_k_map, 16)
         adjust_block_size_dot_m_dim(nargs, current, config, bs_k_map, bs_m_map, 128)
 
@@ -768,3 +773,4 @@ def auto_adjust_block_sizes(nargs, fn, configs, current, config):
             base_fn = base_fn.fn
         print(f'[AABS] ==== Finish: {base_fn.__name__}({nargs_str})')
         print(f'[AABS] ====         adjusted_config={config}')
+        print("==============================================================\n")
