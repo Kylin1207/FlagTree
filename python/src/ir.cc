@@ -384,7 +384,7 @@ void init_triton_ir(py::module &&m) {
 #ifdef __TLE__
                     mlir::triton::tle::TleDialect // flagtree tle raw
 #endif
-                    mlir::triton::gluon::GluonDialect>();
+                        mlir::triton::gluon::GluonDialect>();
     mlir::LLVM::registerInlinerInterface(registry);
     registerBuiltinDialectTranslation(registry);
     registerLLVMDialectTranslation(registry);

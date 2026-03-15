@@ -20,8 +20,6 @@ from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
 from .cache import get_cache_key
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl
-import tokenize
-from io import StringIO
 
 TRITON_MODULE = "triton.language"
 GLUON_MODULE = "triton.experimental.gluon.language"

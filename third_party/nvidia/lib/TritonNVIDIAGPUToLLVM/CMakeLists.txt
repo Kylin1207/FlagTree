@@ -1,5 +1,5 @@
 if(FLAGTREE_TLE)
-    set(_TLE_LIBS 
+    set(_TLE_LIBS
         TritonTLEAnalysis
         TleToLLVM # flagtree tle raw
     )
