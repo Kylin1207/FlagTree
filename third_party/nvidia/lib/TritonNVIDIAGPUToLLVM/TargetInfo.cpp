@@ -157,7 +157,8 @@ static Value mapa(RewriterBase &rewriter, Location loc, Value ptr, Value ctaid,
 #ifdef __TLE__
   (void)pred;
   auto clusterPtrTy = LLVM::LLVMPointerType::get(
-      rewriter.getContext(), static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster));
+      rewriter.getContext(),
+      static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster));
   return NVVM::MapaOp::create(rewriter, loc, clusterPtrTy, ptr, ctaid);
 #else
   return NVVM::MapaOp::create(rewriter, loc, ptr.getType(), ptr, ctaid);
@@ -208,9 +209,8 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
   MLIRContext *ctx = rewriter.getContext();
   auto ptrTy = cast<LLVM::LLVMPointerType>(ptr.getType());
 #ifdef __TLE__
-  const bool isShared =
-      ptrTy.getAddressSpace() ==
-      static_cast<unsigned>(NVVM::NVVMMemorySpace::Shared);
+  const bool isShared = ptrTy.getAddressSpace() ==
+                        static_cast<unsigned>(NVVM::NVVMMemorySpace::Shared);
   const bool isClusterShared =
       ptrTy.getAddressSpace() ==
       static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster);
@@ -363,9 +363,8 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
   MLIRContext *ctx = rewriter.getContext();
   auto ptrTy = cast<LLVM::LLVMPointerType>(ptr.getType());
 #ifdef __TLE__
-  const bool isShared =
-      ptrTy.getAddressSpace() ==
-      static_cast<unsigned>(NVVM::NVVMMemorySpace::Shared);
+  const bool isShared = ptrTy.getAddressSpace() ==
+                        static_cast<unsigned>(NVVM::NVVMMemorySpace::Shared);
   const bool isClusterShared =
       ptrTy.getAddressSpace() ==
       static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster);
