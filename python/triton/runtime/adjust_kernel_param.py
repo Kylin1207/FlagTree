@@ -112,7 +112,8 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                 if shape_names or block_names:
                     self.tma_device_desc_defs_map[var_name] = {"shape": shape_names, "block_shape": block_names}
 
-            self.var_all_definitions.setdefault(var_name, list[ast.AST]()).append(node.value)
+            self.var_all_definitions.setdefault(var_name, list[ast.AST]()) \
+                                    .append(node.value)
             self.var_definitions[var_name] = node.value
         self.generic_visit(node)
 
@@ -374,7 +375,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             bs_k_name = k_from_a if k_from_a is not None else k_from_b
             if (k_from_a is not None and k_from_b is not None and k_from_a != k_from_b):
                 if knobs.autotuning.print:
-                    print(f"Inconsistent bshape: {k_from_a} != {k_from_b}")
+                    print(f"[Analyzer] Warning: inconsistent bshape {k_from_a} != {k_from_b}")
                 return {}, {}
 
             a_tensor_param = self._resolve_tensor_param(a_desc_name)
@@ -389,17 +390,26 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         return bs_m_map, bs_k_map
 
     def analyze_tl_load_bs(self) -> dict[str, str]:
-        load_map = dict[str, str]()
+        load_map = dict[str, str]()  # [bs_name, ts_name]
         for addr_expr in self.load_addresses:
-            used_vars = VariableCollector.collect(addr_expr)
-            for var_name in used_vars:
-                if var_name not in self.var_all_definitions or var_name.startswith("pid"):
+            tl_load_used_var_names = VariableCollector.collect(addr_expr)
+            # Case: a = tl.load(A + (ram[:, None] * stride_am + rk[None, :] * stride_ak))
+            #   tl_load_used_var_names = {'A', 'ram', 'stride_am', 'stride_ak', 'rk'}
+            for var_name in tl_load_used_var_names:
+                # self.var_all_definitions = {'pid':.., 'grid_m':.., 'grid_n':.., 'width':..,
+                #   'group_id':.., 'group_size':.., 'pid_m':.., 'pid_n':.., 'offset_am':..,
+                #   'offset_bn':.., 'offset_k':.., 'a_desc':.., 'b_desc':.., 'c_desc':..,
+                #   'acc':.., 'a':.., 'b':.., 'rm':.., 'rn':.., 'ram':.., 'rbn':..,
+                #   'prev_multiple':.., 'rk':.., 'mask_k':.., 'offsets':.., 'mask':..}
+                if var_name not in self.var_all_definitions: # or var_name.startswith("pid"):  # OK
                     continue
-                blocks = self._extract_arange_bs_recursive(var_name)
-                input_deps, _ = self.get_dependencies(var_name)
-                if len(input_deps) == 1 and len(blocks) == 1:
-                    ts_name = list[str](input_deps)[0]
-                    bs_name = list[str](blocks)[0]
+                bs_names_set = self._extract_arange_bs_recursive(var_name)
+                ts_names_set, _ = self.get_dependencies(var_name)
+                # var_name = 'ram', bs_names_set = {'BLOCK_M'}, ts_names_set={'M'}
+                # var_name = 'rk',  bs_names_set = {'BLOCK_K'}, ts_names_set={'K'}
+                if len(bs_names_set) == 1 and len(ts_names_set) == 1:
+                    bs_name = bs_names_set.pop()
+                    ts_name = ts_names_set.pop()
                     load_map[bs_name] = ts_name
         return load_map
 
