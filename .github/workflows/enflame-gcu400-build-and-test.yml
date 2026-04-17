@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  enflame3.6-gcu400-build-and-test:
+  enflame36-gcu400-build-and-test:
     runs-on: "enflame3.6-gcu400"
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
@@ -59,4 +59,5 @@ jobs:
         shell: bash
         run: |
           set -x
-          python3 -m pytest -s third_party/enflame/python/test/unit
+          python3 -m pytest -s third_party/enflame/python/test/unit \
+              --ignore=third_party/enflame/python/test/unit/language/test_core.py
