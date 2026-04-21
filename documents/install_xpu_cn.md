@@ -7,9 +7,9 @@
 
 ### 1. 构建及运行环境
 
-#### 1.1 使用预装镜像（P800）
+#### 1.1 使用镜像（P800）
 
-如果网络环境畅通，也不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
+如果网络环境畅通，不必执行后续步骤 1.x，依赖库会在构建时自动拉取。
 
 ```shell
 IMAGE=flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202604-base
@@ -53,7 +53,7 @@ tar zxvf xpu-device-libs-ubuntu-x64_v0.3.6.1.1.tar.gz
 
 #### 1.3 手动下载 Triton 依赖库
 
-预装镜像中已下载安装 Triton 依赖库。
+镜像中已下载安装 Triton 依赖库。
 如果无需从源码构建 FlagTree 或 Triton，那么无需下载 Triton 依赖库。
 
 ```shell
@@ -74,7 +74,7 @@ sh python/scripts/unpack_triton_build_deps.sh ./build-deps-triton_3.1.x-linux-x6
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3 -m pip install flagtree===0.5.1+xpu3.0 $RES
+python3.10 -m pip install flagtree===0.5.1+xpu3.0 $RES
 ```
 
 安装 `flagtree` 后，可通过下列命令查看：
@@ -94,5 +94,7 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
 ### 3. 测试验证
+
+测试前需执行 `export XPU_EVENT_KL3_ENABLE=1`
 
 参考 [Tests of xpu backend](/.github/workflows/xpu-build-and-test.yml)

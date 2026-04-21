@@ -7,9 +7,9 @@
 
 ### 1. Build and run environment
 
-#### 1.1 Use the preinstalled image (P800)
+#### 1.1 Use the image (P800)
 
-If your network connection is available, you also do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
+If your network connection is available, you do not need to perform the later step 1.x, because dependencies will be fetched automatically during the build.
 
 ```shell
 IMAGE=flagtree-xpu-py310-torch2.5.1-ubuntu20.04:202604-base
@@ -53,7 +53,7 @@ tar zxvf xpu-device-libs-ubuntu-x64_v0.3.6.1.1.tar.gz
 
 #### 1.3 Manually download the Triton dependencies
 
-The Triton dependencies are already downloaded and installed in the preinstalled image.
+The Triton dependencies are already downloaded and installed in the image.
 If you do not need to build FlagTree or Triton from source, you do not need to download the Triton dependencies.
 
 ```shell
@@ -74,7 +74,7 @@ Note that the script will prompt for manual confirmation during execution.
 # Note: First install PyTorch, then execute the following commands
 python3 -m pip uninstall -y triton  # Repeat the cmd until fully uninstalled
 RES="--index-url=https://resource.flagos.net/repository/flagos-pypi-hosted/simple"
-python3 -m pip install flagtree===0.5.1+xpu3.0 $RES
+python3.10 -m pip install flagtree===0.5.1+xpu3.0 $RES
 ```
 
 After installing `flagtree`, you can check it with:
@@ -94,5 +94,7 @@ MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 ```
 
 ### 3. Testing and validation
+
+Before testing, you need to execute `export XPU_EVENT_KL3_ENABLE=1`
 
 Refer to [Tests of xpu backend](/.github/workflows/xpu-build-and-test.yml)
