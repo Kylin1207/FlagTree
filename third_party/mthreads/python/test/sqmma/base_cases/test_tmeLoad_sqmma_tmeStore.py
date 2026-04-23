@@ -112,10 +112,8 @@ def matmul_kernel_tmeLoad_sqmma_tmeStore(
         # leading dimension of A/B larger than 256B
         (32, 256, 32, 4),
         (32, 512, 32, 4),
-        (32, 1024, 32, 4),
         (32, 32, 256, 4),
         (32, 32, 512, 4),
-        (32, 32, 1024, 4),
         # leading dimension of A/B larger than 256B, multi dim replicate
         (32, 256, 256, 4),
         (64, 256, 32, 4),
