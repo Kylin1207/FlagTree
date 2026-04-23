@@ -1,4 +1,4 @@
-name: CD-Enflame-GCU400-triton_v3.6.x
+name: CD-Enflame3.6-GCU400
 
 permissions:
   contents: write
@@ -41,7 +41,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  enflame36-gcu400-cd:
+  delivery:
     runs-on: "enflame3.6-gcu400-cd"
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:

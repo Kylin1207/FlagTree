@@ -1,4 +1,4 @@
-name: CD-Xpu-triton_v3.1.x
+name: CD-Xpu3.0
 
 permissions:
   contents: write
@@ -41,7 +41,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  xpu-cd:
+  delivery:
     runs-on: xpu-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:

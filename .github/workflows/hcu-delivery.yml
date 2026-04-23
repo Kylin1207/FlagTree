@@ -1,4 +1,4 @@
-name: CD-Hcu-triton_v3.1.x
+name: CD-Hcu3.1
 
 permissions:
   contents: write
@@ -41,7 +41,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  hcu-cd:
+  delivery:
     runs-on: hcu-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:

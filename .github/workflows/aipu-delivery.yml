@@ -1,4 +1,4 @@
-name: CD-AIPU-triton_v3.3.x
+name: CD-AIPU3.3
 
 permissions:
   contents: write
@@ -41,7 +41,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  aipu-cd:
+  delivery:
     runs-on: aipu-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:

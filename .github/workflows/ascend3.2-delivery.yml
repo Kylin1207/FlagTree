@@ -1,4 +1,4 @@
-name: CD-Sunrise3.4
+name: CD-Ascend3.2
 
 permissions:
   contents: write
@@ -12,10 +12,10 @@ on:
         default: '0.5.0'
       PYTHON_VER:
         required: true
-        default: '3.10'
+        default: '3.11'
       PLATFORM:
         required: true
-        default: 'x86_64'
+        default: 'aarch64'
       FLAGTREE_PYPI_KEY:
         required: false
   workflow_call:
@@ -27,11 +27,11 @@ on:
       PYTHON_VER:
         type: string
         required: true
-        default: '3.10'
+        default: '3.11'
       PLATFORM:
         type: string
         required: true
-        default: 'x86_64'
+        default: 'aarch64'
       FLAGTREE_PYPI_KEY:
         type: string
         required: false
@@ -42,15 +42,15 @@ concurrency:
 
 jobs:
   delivery:
-    runs-on: sunrise-cd
+    runs-on: ascend-cd
     if: ${{ github.repository == 'FlagTree/flagtree' || github.repository == 'flagos-ai/flagtree' }}
     steps:
       - name: Check branch
         shell: bash
         run: |
           TARGET_BRANCH="${{ github.ref_name }}"
-          if [[ ! "$TARGET_BRANCH" =~ ^(triton_v3\.4\.x)$ ]]; then
-            echo "❌ This workflow must be run from branch 'triton_v3.4.x', but got '${TARGET_BRANCH}'"
+          if [[ ! "$TARGET_BRANCH" =~ ^(triton_v3\.2\.x)$ ]]; then
+            echo "❌ This workflow must be run from branch 'triton_v3.2.x', but got '${TARGET_BRANCH}'"
             exit 1
           fi
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
@@ -67,14 +67,14 @@ jobs:
         with:
           checkout_version: 'v6'
 
-      - name: FlagTree bdist_wheel on Sunrise (triton_v3.4.x branch)
-        if: ${{ env.TARGET_BRANCH == 'triton_v3.4.x' }}
+      - name: FlagTree bdist_wheel on Ascend (triton_v3.2.x branch)
+        if: ${{ env.TARGET_BRANCH == 'triton_v3.2.x' }}
         shell: bash
         run: |
           set -x
-          TRITON_VER="3.4"
+          TRITON_VER="3.2"
           CHIP=""
-          export FLAGTREE_BACKEND=sunrise
+          export FLAGTREE_BACKEND=ascend
           WHL_VER=${{ inputs.WHL_VER }}
           PYTHON_VER=${{ inputs.PYTHON_VER }}
           export FLAGTREE_WHEEL_VERSION="${WHL_VER}+${FLAGTREE_BACKEND}${CHIP}${TRITON_VER}"
@@ -87,9 +87,7 @@ jobs:
             echo "✅ flagtree==${FLAGTREE_WHEEL_VERSION} does not exist, proceed to build"
           fi
 
-          export TRITON_BUILD_WITH_CLANG_LLD=1  # sunrise
-          export TRITON_OFFLINE_BUILD=1  # sunrise
-          export TRITON_BUILD_PROTON=OFF  # sunrise
+          cd python
           rm -rf ./build ./*.egg-info
           { export FLAGTREE_PYPI_KEY=${{ inputs.FLAGTREE_PYPI_KEY }}; } 2>/dev/null
           MAX_JOBS=32 python${PYTHON_VER} setup.py bdist_wheel -d ~/dist-flagtree
