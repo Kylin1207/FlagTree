@@ -141,9 +141,3 @@ def test_boradcast_axis_1(num_stages, BLOCK_M, BLOCK_N, BLOCK_K):
     print("Successfully!")
     if BLOCK_M >= 64 and BLOCK_N >= 64:
         assert "tme" in kernel.asm["llir"]
-
-
-# test_boradcast_axis_0(1, 32, 32, 32)
-# test_boradcast_axis_0(2, 32, 32, 32) # segment fault
-# test_boradcast_axis_1(1, 32, 32, 32)
-# test_boradcast_axis_1(2, 32, 32, 32) # segment fault

@@ -120,7 +120,3 @@ def test_reduce_axis_1(num_stages, BLOCK_M, BLOCK_N, BLOCK_K):
     torch.set_printoptions(threshold=float("inf"), linewidth=800, edgeitems=50, sci_mode=False, precision=1)
     ref_out = torch.max(torch.matmul(A.to(torch.float32), B.to(torch.float32)).to(torch.float16), axis=1)[0]
     torch.testing.assert_close(ref_out, R, rtol=1e-3, atol=1e-3)
-
-
-# test_reduce_axis_0(1, 32, 32, 32)
-# test_reduce_axis_1(1, 32, 32, 32)
