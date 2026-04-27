@@ -306,7 +306,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             next_queue = list[str]()
             layer_inputs = set[str]()
             for cur in queue:
-                if cur not in self.var_definitions: # or cur.startswith('pid'):
+                if cur not in self.var_definitions:
                     continue
                 used_vars = VariableCollector.collect(self.var_definitions[cur])
                 for v in used_vars:
@@ -337,7 +337,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             return var_deps
 
         # Recursively analyze the dependencies of the variable definition
-        if var_name in self.var_definitions and not var_name.startswith('pid'):
+        if var_name in self.var_definitions:
             definition_node = self.var_definitions[var_name]
             # Skip runtime value program_id
             if True:
