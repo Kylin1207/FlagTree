@@ -280,36 +280,47 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     ret.update(self._extract_arange_bs_recursive(child_var, visited.copy()))
         return ret
 
-    def get_dependencies(self, var_name: str, visited: set[str] | None = None) -> tuple[set[str], set[str]]:
-        if visited is None:
-            visited = set[str]()
-        if var_name in visited:
-            return set[str](), set[str]()
-        visited.add(var_name)
-
+    def get_dependencies(self, var_name: str) -> tuple[set[str], set[str]]:
+        # Layered (BFS) dependency analysis with input short-circuit.
+        # For each layer (one level of definitions):
+        #   - constexpr params encountered are always accumulated
+        #   - if any input param appears in this layer, return immediately
+        #     (don't dive deeper through other branches)
+        # This avoids polluting input_deps via pid-derived chains that
+        # eventually reach grid_m/grid_n -> M/N. Example: ram's definition
+        # `tl.max_contiguous(tl.multiple_of(rm % M, BLOCK_M), ...)` directly
+        # contains M, so we stop there and never traverse rm -> pid_m -> ...
         input_deps = set[str]()
         constexpr_deps = set[str]()
 
-        # Check if it is a non-constexpr parameter
         if var_name in self.input_params and var_name not in self.constexpr_params:
             input_deps.add(var_name)
             return input_deps, constexpr_deps
-
-        # Check if it is a constexpr parameter
         if var_name in self.constexpr_params:
             constexpr_deps.add(var_name)
             return input_deps, constexpr_deps
 
-        # Recursively analyze the dependencies of the variable definition
-        if var_name in self.var_definitions and not var_name.startswith('pid'):
-            definition_node = self.var_definitions[var_name]
-            # Skip runtime value program_id
-            if True:
-                used_vars = VariableCollector.collect(definition_node)
-                for used_var in used_vars:
-                    sub_inputs, sub_constexprs = self.get_dependencies(used_var, visited.copy())
-                    input_deps.update(sub_inputs)
-                    constexpr_deps.update(sub_constexprs)
+        visited = {var_name}
+        queue = [var_name]
+        while queue:
+            next_queue = list[str]()
+            layer_inputs = set[str]()
+            for cur in queue:
+                if cur not in self.var_definitions: # or cur.startswith('pid'):
+                    continue
+                used_vars = VariableCollector.collect(self.var_definitions[cur])
+                for v in used_vars:
+                    if v in self.input_params and v not in self.constexpr_params:
+                        layer_inputs.add(v)
+                    elif v in self.constexpr_params:
+                        constexpr_deps.add(v)
+                    elif v not in visited:
+                        visited.add(v)
+                        next_queue.append(v)
+            if layer_inputs:
+                input_deps.update(layer_inputs)
+                return input_deps, constexpr_deps
+            queue = next_queue
         return input_deps, constexpr_deps
 
     def _get_dependencies_vars(self, var_name: str, visited: set[str] | None = None) -> set[str]:
