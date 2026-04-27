@@ -245,17 +245,38 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         return out
 
     def _extract_arange_bs_recursive(self, var_name: str, visited: set[str] | None = None) -> set[str]:
+        # Case (mm_kernel_general): a = tl.load(A + (ram[:, None] * stride_am + rk[None, :] * stride_ak))
+        # Case1: var_name = 'rk', ret = {'BLOCK_K'}
+        # Case2: var_name = 'ram', ret = {'BLOCK_M'}
         if visited is None:
             visited = set[str]()
         if var_name in visited:
             return set[str]()
         visited.add(var_name)
 
+        # Case1:   var_all_definitions['rk'] = [
+        #              (start_k + tl.arange(0, BLOCK_K)).to(tl.int64),
+        #              (prev_multiple + tl.arange(0, BLOCK_K)).to(tl.int64)
+        #          ]
+        # Case2:   var_all_definitions['ram'] = [
+        #              tl.max_contiguous(tl.multiple_of(rm % M, BLOCK_M), BLOCK_M).to(tl.int64)
+        #          ]
+        # Case2.1: var_all_definitions['rm'] = [
+        #              pid_m * BLOCK_M + tl.arange(0, BLOCK_M),
+        #              rm.to(tl.int64)
+        #          ]
         ret = set[str]()
         for def_node in self.var_all_definitions.get(var_name, []):
             ret.update(self._extract_arange_bs(def_node))
+            # Case1:   found tl.arange(0, BLOCK_K) => 'BLOCK_K'
+            #          VariableCollector.collect(def_node) = {'start_k', 'prev_multiple'}
+            # Case2:   not found tl.arange
+            #          VariableCollector.collect(def_node) = {'rm'}
+            # Case2.1: found tl.arange(0, BLOCK_M) => 'BLOCK_M'
+            #          VariableCollector.collect(def_node) = {}
             for child_var in VariableCollector.collect(def_node):
                 if child_var != var_name and child_var not in self.input_params and child_var not in self.constexpr_params:
+                    # Filter out input_params('A', 'M', 'stride_*') and constexpr_params('BLOCK_*')
                     ret.update(self._extract_arange_bs_recursive(child_var, visited.copy()))
         return ret
 
@@ -314,6 +335,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
                     var_deps.update(self._get_dependencies_vars(used_var, visited.copy()))
         return var_deps
 
+    # Analyzer 3: tl.dot
     def analyze_dot_dim(self, tma_map: dict[str, set[tuple[str, ...]]]) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
         # tma_map already stores the canonical block_shape per desc,
         # representing (M,K) or (K,N) in memory-layout order.
@@ -389,11 +411,12 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
 
         return bs_m_map, bs_k_map
 
+    # Analyzer 1: tl.load
     def analyze_tl_load_bs(self) -> dict[str, str]:
         load_map = dict[str, str]()  # [bs_name, ts_name]
         for addr_expr in self.load_addresses:
             tl_load_used_var_names = VariableCollector.collect(addr_expr)
-            # Case: a = tl.load(A + (ram[:, None] * stride_am + rk[None, :] * stride_ak))
+            # Case (mm_kernel_general): a = tl.load(A + (ram[:, None] * stride_am + rk[None, :] * stride_ak))
             #   tl_load_used_var_names = {'A', 'ram', 'stride_am', 'stride_ak', 'rk'}
             for var_name in tl_load_used_var_names:
                 # self.var_all_definitions = {'pid':.., 'grid_m':.., 'grid_n':.., 'width':..,
@@ -453,6 +476,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             print(f"[Analyzer] hook_desc_bshapes_map = {ret}")
         return ret  # dict[desc_name, list[desc_bshape]]
 
+    # Analyzer 2: desc.load
     def analyze_desc_load_bs(
             self, pre_hook_fn: object | None = None) -> dict[str, set[tuple[str, ...]]]:
         # 2.0) desc_bshapes_map: dict[desc_name, list[desc_bshape]]
