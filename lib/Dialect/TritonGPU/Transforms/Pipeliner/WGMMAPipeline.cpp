@@ -31,6 +31,21 @@ namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
 namespace ttng = mlir::triton::nvidia_gpu;
 
+#ifdef __TLE__
+static constexpr llvm::StringLiteral
+    kTleExplicitTileStylePipelineAttr("tle.explicit_tile_style_pipeline");
+
+static bool shouldPreserveAsyncWaitNum(ttg::AsyncWaitOp waitOp) {
+  Operation *parent = waitOp->getParentOp();
+  while (parent) {
+    if (auto forOp = dyn_cast<scf::ForOp>(parent))
+      return forOp->hasAttr(kTleExplicitTileStylePipelineAttr);
+    parent = parent->getParentOp();
+  }
+  return false;
+}
+#endif
+
 // Returns whether the dot is such that:
 // 1. The LHS comes from registers and
 // 1.1  The LHS is defined inside the loop
@@ -54,6 +69,43 @@ static bool rsDotNeedsWait(Operation *dot, scf::ForOp forOp) {
   }
   return true;
 }
+
+#ifdef __TLE__
+// A non-zero accumulator that is not produced by another WGMMA requires
+// ordinary register materialization before the WGMMA can consume it as C. If
+// such prep is placed before the first wait while an older async group is still
+// pending, ptxas treats it as an accumulator definition inside the WGMMA
+// pipeline and serializes the following WGMMA group.
+static bool warpGroupDotNeedsAccumulatorPrewrite(ttng::WarpGroupDotOp dotOp) {
+  Value acc = dotOp.getC();
+  if (isZeroConst(acc))
+    return false;
+
+  while (Operation *def = acc.getDefiningOp()) {
+    if (isNoop(def)) {
+      assert(def->getNumOperands() == 1 && def->getNumResults() == 1 &&
+             "Expected no-op accumulator def to be single-input single-output");
+      acc = def->getOperand(0);
+      continue;
+    }
+    return !isa<ttng::WarpGroupDotOp>(def);
+  }
+
+  return false;
+}
+
+static bool hasAccumulatorPrewriteBeforeWait(scf::ForOp forOp,
+                                             ttng::WarpGroupDotWaitOp waitOp) {
+  for (Operation &op : forOp.getBody()->without_terminator()) {
+    if (&op == waitOp.getOperation())
+      return false;
+    auto dotOp = dyn_cast<ttng::WarpGroupDotOp>(op);
+    if (dotOp && warpGroupDotNeedsAccumulatorPrewrite(dotOp))
+      return true;
+  }
+  return false;
+}
+#endif
 
 /// Find the minimum number of async_commit_group ops between the wait
 /// and the associated async_commit_group. This can be safely used as the wait
@@ -130,6 +182,10 @@ static int minNumInterleavedCommitOps(Operation *waitOp) {
 void mlir::triton::updateWaits(ModuleOp module) {
   llvm::SmallSetVector<ttg::AsyncWaitOp, 8> waitOps;
   module.walk([&](ttg::AsyncWaitOp waitOp) {
+#ifdef __TLE__
+    if (shouldPreserveAsyncWaitNum(waitOp))
+      return;
+#endif
     int minNumCommits = minNumInterleavedCommitOps(waitOp);
     waitOp.setNum(minNumCommits);
     waitOps.insert(waitOp);
@@ -533,6 +589,44 @@ static std::optional<int> dotCanBeProperlyAsync(ttng::WarpGroupDotOp dotOp,
   auto waitOps = forOp.getBody()->getOps<ttng::WarpGroupDotWaitOp>();
   auto firstWaitOpIter = llvm::find_if(
       waitOps, [&](auto waitOp) { return waitOp.getPendings() == 0; });
+#ifdef __TLE__
+  // The upstream Rule 3b only checks that loop-carried accumulator users are
+  // after a wait. For TLE kernels, that is not sufficient when the wait is
+  // before this dot in the loop body: the dot would stay pending across the
+  // backedge and ptxas inserts a hidden wait/serialization. Require the wait
+  // that protects Rule 3b to be after this dot in the same loop iteration.
+  if (firstWaitOpIter != waitOps.end()) {
+    if (!dotOp->isBeforeInBlock(*firstWaitOpIter)) {
+      LDBG("Can't make dot async because the first warp_group_dot_wait "
+           "{pendings=0} is before the dot, which would leave the WGMMA "
+           "pipeline stage open across the loop backedge.");
+      return std::nullopt;
+    }
+
+    if (llvm::all_of(iterArg.getUsers(), [&](Operation *user) {
+          assert(forOp->isAncestor(user));
+          while (user->getParentOp() != forOp) {
+            user = user->getParentOp();
+          }
+          return (*firstWaitOpIter)->isBeforeInBlock(user);
+        })) {
+      if (hasAccumulatorPrewriteBeforeWait(forOp, *firstWaitOpIter)) {
+        LDBG("Can't make dot async because a WGMMA before the first "
+             "warp_group_dot_wait {pendings=0} needs non-WGMMA accumulator "
+             "initialization.");
+        return std::nullopt;
+      }
+
+      LDBG("MMAv3 dot can be properly async because it follows a "
+           "warp_group_dot_wait "
+           "{pendings=0}.\n"
+           << "  wait: " << *firstWaitOpIter << "\n"
+           << "  dot: " << dotOp);
+      threadValuesThroughWait(*firstWaitOpIter, {iterArg});
+      return iterArgIdx;
+    }
+  }
+#else
   if (firstWaitOpIter != waitOps.end() &&
       llvm::all_of(iterArg.getUsers(), [&](Operation *user) {
         assert(forOp->isAncestor(user));
@@ -549,6 +643,7 @@ static std::optional<int> dotCanBeProperlyAsync(ttng::WarpGroupDotOp dotOp,
     threadValuesThroughWait(*firstWaitOpIter, {iterArg});
     return iterArgIdx;
   }
+#endif
 
   LDBG("Can't make dot async because its result from i-1 is used by "
        "something other than another MMAv3 dot as the `c` operand.");
