@@ -743,6 +743,8 @@ class MUSABackend(BaseBackend):
         passes.ttir.add_loop_aware_cse(pm)
         passes.ttgpuir.add_prefetch(pm)
         mthreads.passes.ttgpuir.add_optimize_dot_operands(pm)
+        if hasattr(mthreads.passes.ttgpuir, "add_tle_lower_async_load"):
+            mthreads.passes.ttgpuir.add_tle_lower_async_load(pm)
         passes.ttgpuir.add_coalesce_async_copy(pm)
         mthreads.passes.ttgpuir.add_tme_lowering(pm)
         mthreads.passes.ttgpuir.add_optimize_sqmma_accumulator_layout(pm)

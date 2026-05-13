@@ -137,6 +137,10 @@ void init_triton_musa_passes_ttgpuir(py::module &&m) {
                      mlir::createTritonMUSAGPUOptimizeDescriptorEncoding);
   ADD_PASS_WRAPPER_0("add_optimize_sqmma_accumulator_layout",
                      mlir::createTritonMUSAGPUOptimizeSqmmaAccumulatorLayout);
+#ifdef __TLE__
+  ADD_PASS_WRAPPER_0("add_tle_lower_async_load",
+                     mlir::createTritonMUSAGPUTLELowerAsyncLoad);
+#endif // __TLE__
 }
 
 void init_triton_mthreads(py::module &&m) {

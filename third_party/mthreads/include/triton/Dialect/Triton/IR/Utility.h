@@ -208,6 +208,14 @@ unsigned getBitwidth(RankedTensorType ty);
 std::optional<ConstantIntRanges> getBoundFromCmpOp(arith::CmpIOp cmpOp,
                                                    Value anchor);
 
+#ifdef __TLE__
+
+namespace tle {
+void copyAsyncLoadAttr(LoadOp src, LoadOp dst);
+} // namespace tle
+
+#endif // __TLE__
+
 } // namespace triton
 } // namespace mlir
 

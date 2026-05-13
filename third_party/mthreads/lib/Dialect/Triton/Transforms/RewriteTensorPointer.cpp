@@ -316,6 +316,9 @@ public:
       auto newResult = triton::LoadOp::create(
           builder, loadOp.getLoc(), newPtr, newMask, newOther,
           loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+#ifdef __TLE__
+      tle::copyAsyncLoadAttr(loadOp, newResult);
+#endif // __TLE__
       op->getResult(0).replaceAllUsesWith(newResult);
     } else if (auto storeOp = dyn_cast<triton::StoreOp>(op)) {
       triton::StoreOp::create(builder, storeOp.getLoc(), newPtr,
